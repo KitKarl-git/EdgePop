@@ -8,7 +8,7 @@ so I built the switcher I wanted: fling the cursor at the seam, stop for a
 beat, and the popup is already under your hand. Move away and it's gone.
 Nothing to hold down, nothing extra to install, no taskbar replacement.
 
-![popup](img/popup.png)
+![popup](img/main%20program%20graphic.webp)
 
 ## The short version
 
@@ -24,11 +24,24 @@ Nothing to hold down, nothing extra to install, no taskbar replacement.
 - app blacklist, per-edge on/off, two activation modes, virtual desktop
   filtering. All in Settings, all applies the second you change it.
 
-![settings](img/settings.png)
-
+<br/>
+<div align="center">
+  <img src="img/taskbar%20indicators1.jpg" alt="popup">
+  <br>
+  <small>Taskbar indicators that indicate where your windows are!</small>
+</div>
+<br/>
+<div align="center">
+  <img src="img/edgepop1.png" alt="popup">
+  <br>
+  <small>List of your apps on the neighboring window- in any direction!</small>
+</div>
+<br/>
 The two feature sets (edge popup, taskbar arrows) live on seperate tabs in
 Settings. Every row has a small (?) that opens a help card if you want the
 longer explanation.
+
+If there is some feature that you don't like or you want, let me know! I'm always looking to make it better!
 
 ## Download
 
@@ -46,8 +59,6 @@ themselves off on Windows 10; everything else works on both.
 
 Right-click the tray icon. Changes apply instantly and land in
 `EdgePop.ini` next to the exe.
-
-![taskbar settings](img/settings-taskbar.png)
 
 ## Building from source
 
@@ -87,7 +98,7 @@ seemed like a good moment to open the source up.
 - everything else: [kitkarl.com](https://kitkarl.com)
 
 If EdgePOP saves you some alt-tabbing, [a coffee is always
-appriciated](https://kitkarl.com/donate/).
+appreeciated](https://kitkarl.com/donate/).
 
 ## License
 
