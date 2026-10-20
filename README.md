@@ -8,6 +8,8 @@ so I built the switcher I wanted: fling the cursor at the seam, stop for a
 beat, and the popup is already under your hand. Move away and it's gone.
 Nothing to hold down, nothing extra to install, no taskbar replacement.
 
+2MB installer and 10MB ram usage! None of these badly written 500mb mini-utilities that bog down your system!
+
 ![popup](img/main%20program%20graphic.webp)
 
 ## The short version
