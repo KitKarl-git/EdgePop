@@ -278,7 +278,10 @@ ComPtr<ID2D1Factory1> g_d2df;
 ComPtr<ID2D1Device> g_d2dDev;
 ComPtr<ID2D1DeviceContext> g_dc;
 ComPtr<IDWriteFactory> g_dw;
-ComPtr<IDWriteTextFormat> g_numFmt;
+ComPtr<IDWriteTextFormat> g_numFmt;   // cached at g_numFmtPx (see
+                                       // NumFormat - size follows the
+                                       // slider)
+float g_numFmtPx = 0.0f;
 ComPtr<ID2D1SolidColorBrush> g_brush;
 ComPtr<ID2D1PathGeometry> g_triGeo;     // filled triangle (unit, points E)
 ComPtr<ID2D1PathGeometry> g_headGeo;    // "arrow" shape's head
@@ -325,15 +328,6 @@ bool EnsureStack() {
             break;
         }
         g_dw.Attach(reinterpret_cast<IDWriteFactory*>(dwUnk));
-        g_dw->CreateTextFormat(
-            L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 10.5f,
-            L"", &g_numFmt);
-        if (g_numFmt) {
-            g_numFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            g_numFmt->SetParagraphAlignment(
-                DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
         if (FAILED(g_dc->CreateSolidColorBrush(
                 D2D1::ColorF(D2D1::ColorF::White), &g_brush))) {
             break;
@@ -375,6 +369,45 @@ bool EnsureStack() {
     } while (false);
     if (!g_stackOk) TBLog(L"badges: render stack FAILED");
     return g_stackOk;
+}
+
+// Em size for the indicator digits: they must grow with the Size
+// slider like the glyphs do. 1.31x the glyph size reproduces the
+// shipped default look exactly (8 px glyphs, 10.5 px digits); the
+// floor keeps smaller settings from shrinking below the old fixed
+// 10.5 px.
+float NumFontPx(float gsz) {
+    return std::max(10.5f, gsz * 1.31f);
+}
+
+// The persistent and hover sets are strictly exclusive per render, so
+// one cached format is enough - it is only recreated when the size
+// setting changes.
+IDWriteTextFormat* NumFormat(float px) {
+    if (g_numFmt && g_numFmtPx == px) return g_numFmt.Get();
+    g_numFmt.Reset();
+    g_numFmtPx = 0.0f;
+    if (SUCCEEDED(g_dw->CreateTextFormat(
+            L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, px,
+            L"", &g_numFmt)) &&
+        g_numFmt) {
+        g_numFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        g_numFmt->SetParagraphAlignment(
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        g_numFmtPx = px;
+    }
+    return g_numFmt.Get();
+}
+
+// Width reserved for the number. The fixed allowance reproduces the
+// shipped widths; the digits term (advance ~0.6 em each) takes over
+// once the scaled font outgrows it or the number reaches two digits.
+float NumBoxWidth(int number, float numPx, float allowance) {
+    wchar_t buf[4]{};
+    _itow_s(number, buf, 10);
+    return std::max(allowance,
+                    static_cast<float>(lstrlenW(buf)) * numPx * 0.68f);
 }
 
 void FreeSurface() {
@@ -507,12 +540,13 @@ void DrawGlyph(ID2D1DeviceContext* dc, float cx, float cy, int dir, int hops,
 }
 
 // Capsule content width: number box + gap + glyph cluster.
-float CapsuleWidth(float ch, bool showNum, bool showGlyphs, int hops,
-                   float gsz) {
+float CapsuleWidth(float ch, bool showNum, int number, bool showGlyphs,
+                   int hops, float gsz) {
     const int n = hops < 1 ? 1 : (hops > 3 ? 3 : hops);
     const float glyphW =
         (static_cast<float>(n) - 1.0f) * gsz * 0.95f + gsz * 1.15f;
-    const float numW = showNum ? ch * 0.62f : 0.0f;
+    const float numW =
+        showNum ? NumBoxWidth(number, NumFontPx(gsz), ch * 0.62f) : 0.0f;
     const float gap = (showNum && showGlyphs) ? 2.0f : 0.0f;
     const float contentW = numW + gap + (showGlyphs ? glyphW : 0.0f);
     return std::max(ch + 8.0f, contentW + 12.0f);
@@ -525,7 +559,8 @@ void DrawCapsule(ID2D1DeviceContext* dc, float leftX, float top, float ch,
                  bool showNum, int number, bool showGlyphs, int dir,
                  int hops, float gsz, ArrowShape shape,
                  D2D1_COLOR_F glyphCol, bool shadow) {
-    const float cw = CapsuleWidth(ch, showNum, showGlyphs, hops, gsz);
+    const float cw =
+        CapsuleWidth(ch, showNum, number, showGlyphs, hops, gsz);
     const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(
         D2D1::RectF(leftX, top, leftX + cw, top + ch), ch / 2, ch / 2);
     if (shadow) {
@@ -544,19 +579,22 @@ void DrawCapsule(ID2D1DeviceContext* dc, float leftX, float top, float ch,
     const int n = hops < 1 ? 1 : (hops > 3 ? 3 : hops);
     const float glyphW =
         (static_cast<float>(n) - 1.0f) * gsz * 0.95f + gsz * 1.15f;
-    const float numW = showNum ? ch * 0.62f : 0.0f;
+    const float numW = showNum
+        ? NumBoxWidth(number, NumFontPx(gsz), ch * 0.62f) : 0.0f;
     const float gap = (showNum && showGlyphs) ? 2.0f : 0.0f;
     const float contentW = numW + gap + (showGlyphs ? glyphW : 0.0f);
     float contentX = leftX + (cw - contentW) / 2;
-    if (showNum && g_numFmt) {
-        wchar_t num[4]{};
-        _itow_s(number, num, 10);
-        g_brush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
-        dc->DrawTextW(num, lstrlenW(num), g_numFmt.Get(),
-                        D2D1::RectF(contentX, top, contentX + numW,
-                                    top + ch),
-                        g_brush.Get());
-        contentX += numW + gap;
+    if (showNum) {
+        if (IDWriteTextFormat* fmt = NumFormat(NumFontPx(gsz))) {
+            wchar_t num[4]{};
+            _itow_s(number, num, 10);
+            g_brush->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+            dc->DrawTextW(num, lstrlenW(num), fmt,
+                            D2D1::RectF(contentX, top, contentX + numW,
+                                        top + ch),
+                            g_brush.Get());
+            contentX += numW + gap;
+        }
     }
     if (showGlyphs) {
         DrawGlyph(dc, contentX + glyphW / 2, top + ch / 2, dir, hops, gsz,
@@ -610,11 +648,13 @@ BOOL CALLBACK LiftEnumProc(HWND h, LPARAM lp) {
 }
 
 // Bare (no-capsule) content width - matches DrawBare's layout.
-float BareWidth(bool showNum, bool showGlyphs, int hops, float gsz) {
+float BareWidth(bool showNum, int number, bool showGlyphs, int hops,
+                float gsz) {
     const int n = hops < 1 ? 1 : (hops > 3 ? 3 : hops);
     const float glyphW =
         (static_cast<float>(n) - 1.0f) * gsz * 0.95f + gsz * 1.15f;
-    const float numW = showNum ? gsz + 4.0f : 0.0f;
+    const float numW =
+        showNum ? NumBoxWidth(number, NumFontPx(gsz), gsz + 4.0f) : 0.0f;
     const float gap = (showNum && showGlyphs) ? 3.0f : 0.0f;
     return numW + gap + (showGlyphs ? glyphW : 0.0f);
 }
@@ -627,25 +667,30 @@ void DrawBare(ID2D1DeviceContext* dc, float leftX, float cy, bool showNum,
     const int n = hops < 1 ? 1 : (hops > 3 ? 3 : hops);
     const float glyphW =
         (static_cast<float>(n) - 1.0f) * gsz * 0.95f + gsz * 1.15f;
-    const float numW = showNum ? gsz + 4.0f : 0.0f;
+    const float numPx = NumFontPx(gsz);
+    const float numW = showNum ? NumBoxWidth(number, numPx, gsz + 4.0f)
+                               : 0.0f;
     const float gap = (showNum && showGlyphs) ? 3.0f : 0.0f;
     float cur = leftX;
     const float so = std::max(1.0f, gsz * 0.16f);
-    if (showNum && g_numFmt) {
-        wchar_t num[4]{};
-        _itow_s(number, num, 10);
-        D2D1_RECT_F box = D2D1::RectF(cur, cy - gsz, cur + numW, cy + gsz);
-        if (shadow) {
-            D2D1_RECT_F sh = box;
-            sh.left += so; sh.top += so; sh.right += so; sh.bottom += so;
-            g_brush->SetColor(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.55f));
-            dc->DrawTextW(num, lstrlenW(num), g_numFmt.Get(), sh,
-                            g_brush.Get());
+    if (showNum) {
+        if (IDWriteTextFormat* fmt = NumFormat(numPx)) {
+            wchar_t num[4]{};
+            _itow_s(number, num, 10);
+            const float halfH = std::max(gsz, numPx * 0.7f);
+            D2D1_RECT_F box =
+                D2D1::RectF(cur, cy - halfH, cur + numW, cy + halfH);
+            if (shadow) {
+                D2D1_RECT_F sh = box;
+                sh.left += so; sh.top += so; sh.right += so;
+                sh.bottom += so;
+                g_brush->SetColor(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.55f));
+                dc->DrawTextW(num, lstrlenW(num), fmt, sh, g_brush.Get());
+            }
+            g_brush->SetColor(col);
+            dc->DrawTextW(num, lstrlenW(num), fmt, box, g_brush.Get());
+            cur += numW + gap;
         }
-        g_brush->SetColor(col);
-        dc->DrawTextW(num, lstrlenW(num), g_numFmt.Get(), box,
-                        g_brush.Get());
-        cur += numW + gap;
     }
     if (showGlyphs) {
         DrawGlyph(dc, cur + glyphW / 2, cy, dir, hops, gsz, shape, col,
@@ -743,9 +788,9 @@ void Render() {
         const D2D1_COLOR_F col = ColorOf(g_cfg.color, 0.95f);
         for (const auto& it : g_snap->items) {
             const float cw = g_cfg.persistentBg
-                ? CapsuleWidth(ch, g_cfg.persistentNumbers,
+                ? CapsuleWidth(ch, g_cfg.persistentNumbers, it.number,
                                g_cfg.persistentArrows, it.hops, gsz)
-                : BareWidth(g_cfg.persistentNumbers,
+                : BareWidth(g_cfg.persistentNumbers, it.number,
                             g_cfg.persistentArrows, it.hops, gsz);
             const float leftX = AnchorX(it, x, cw);
             if (g_cfg.persistentBg) {
@@ -795,10 +840,10 @@ void Render() {
             const float gsz2 = static_cast<float>(g_cfg.hoverSize);
             const float chH = std::max(16.0f, gsz2 + 8.0f);
             const float cw = g_cfg.hoverBg
-                ? CapsuleWidth(chH, g_cfg.hoverNumbers, g_cfg.hoverArrows,
-                               it.hops, gsz2)
-                : BareWidth(g_cfg.hoverNumbers, g_cfg.hoverArrows, it.hops,
-                            gsz2);
+                ? CapsuleWidth(chH, g_cfg.hoverNumbers, it.number,
+                               g_cfg.hoverArrows, it.hops, gsz2)
+                : BareWidth(g_cfg.hoverNumbers, it.number,
+                            g_cfg.hoverArrows, it.hops, gsz2);
             const float leftX = AnchorX(it, x, cw);
             if (g_cfg.hoverBg) {
                 DrawCapsule(g_dc.Get(), leftX,

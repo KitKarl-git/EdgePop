@@ -12,7 +12,7 @@
 ; "unknown publisher" prompt.
 
 #define MyAppName "EdgePop"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.2.1"
 #define MyAppPublisher "KitKarl"
 #define MyAppURL "https://kitkarl.com"
 #define MyAppExeName "EdgePop.exe"
@@ -30,7 +30,7 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=EdgePop-Setup-1.2.0
+OutputBaseFilename=EdgePop-Setup-1.2.1
 SetupIconFile=..\src\app.ico
 UninstallDisplayName=EdgePOP by KitKarl
 UninstallDisplayIcon={app}\{#MyAppExeName}
