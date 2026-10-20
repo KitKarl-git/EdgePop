@@ -1,0 +1,74 @@
+# Build outputs
+build/
+out/
+bin/
+obj/
+x64/
+x86/
+Debug/
+Release/
+artifacts/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.exp
+*.iobj
+*.ipdb
+
+# IDE state
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.rsuser
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CMakeUserPresets.json
+
+# .NET / NuGet
+*.nupkg
+packages/
+project.lock.json
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local machine settings — never commit
+EdgePop.local.ini
+*.local.ini
+*.local.json
+
+# Logs and crash dumps
+*.log
+*.dmp
+
+# Local toolchains (portable cmake etc.)
+.tools/
+
+# Stray root-level INI from test runs (real one lives next to the exe)
+/EdgePop.ini
+
+# Probe artifacts (scripts/thumb-probe etc.)
+scripts/*.bmp
+scripts/*.png
+
+# internal dev notes and scratch areas (not part of the source drop)
+AGENTS.md
+/docs/
+/scripts/
+/images/
+/dist/
+src/tests/dialog_probe.cpp
+src/tests/dialog_probe.rc
+
+# raw screenshot scratch; the ones used in the README live in img/
+/screenshots/

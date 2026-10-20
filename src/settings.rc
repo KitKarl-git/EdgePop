@@ -1,0 +1,241 @@
+// EdgePOP by KitKarl - settings dialogs.
+// (?) buttons are owner-drawn circles moved at runtime to hug the end of
+// each label's text (VideoSquisher behavior). Positions are dialog units.
+//
+// One fixed-size "Activation" group holds the pill and the mode settings;
+// the inactive mode's rows are simply hidden - the dialog never changes
+// size when switching. The edge-mode and cross-mode rows
+// share the same slots.
+
+#include <winres.h>
+#include "resource.h"
+
+IDD_SETTINGS DIALOGEX 0, 0, 270, 509
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU |
+    WS_THICKFRAME | WS_MAXIMIZEBOX | WS_VSCROLL
+EXSTYLE WS_EX_APPWINDOW
+CAPTION "EdgePOP by KitKarl - Settings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    // Top band: the site link (custom-drawn teal, - SysLinks can't
+    // be recolored), the free-app pitch and the Donate button.
+    LTEXT "Find more useful apps at kitkarl.com", IDC_LINK_SITE, 7, 5,
+        130, 10, SS_NOTIFY
+    LTEXT "All changes apply instantly.", IDC_ST_APPLYNOTE, 138, 6, 123, 8,
+        SS_RIGHT
+    LTEXT "EdgePOP is free, and always will be. Coffee isn't - buy Karl a cup and fuel the next update!",
+        IDC_ST_DONATE_PITCH, 7, 17, 162, 20
+    PUSHBUTTON "Donate", IDC_BTN_DONATE, 192, 18, 58, 14
+
+    // Two tabs: Edge popup / Taskbar arrows. Each page carries
+    // its master switch + its box; Start with Windows and the bottom
+    // buttons are shared. Page contents never move (fixed slots, like
+    // the activation mode swap - no size jumping,).
+    CONTROL "", IDC_TABS, "EdgePopTabs", WS_TABSTOP, 14, 36, 242, 16
+
+    // --- Edge popup page --------------------------------------------------
+    CONTROL "Activate edge popup", IDC_SW_ENABLE, "EdgePopSwitch",
+        WS_TABSTOP, 14, 58, 170, 14
+    PUSHBUTTON "?", IDC_QQ_ENABLE, 190, 60, 12, 11, BS_OWNERDRAW
+
+    GROUPBOX "Activation", IDC_GB_ACT, 14, 88, 242, 90
+    CONTROL "", IDC_PILL_ACT, "EdgePopPill", WS_TABSTOP, 21, 98, 212, 16
+    PUSHBUTTON "?", IDC_QQ_ACT, 237, 100, 12, 11, BS_OWNERDRAW
+
+    // Mode settings rows (edge mode: three rows; cross mode: first row).
+    LTEXT "Dwell (ms)", IDC_LB_DWELL, 21, 124, 50, 8
+    PUSHBUTTON "?", IDC_QQ_DWELL, 85, 122, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_DWELL, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 122, 120, 14
+    EDITTEXT IDC_ED_DWELL, 221, 121, 30, 12, ES_RIGHT | ES_NUMBER
+    LTEXT "Zone width (px)", IDC_LB_ZONE, 21, 140, 64, 8
+    PUSHBUTTON "?", IDC_QQ_ZONE, 85, 138, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_ZONE, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 138, 120, 14
+    EDITTEXT IDC_ED_ZONE, 221, 137, 30, 12, ES_RIGHT | ES_NUMBER
+    LTEXT "Stop radius (px)", IDC_LB_STOP, 21, 156, 66, 8
+    PUSHBUTTON "?", IDC_QQ_STOP, 85, 154, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_STOP, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 154, 120, 14
+    EDITTEXT IDC_ED_STOP, 221, 153, 30, 12, ES_RIGHT | ES_NUMBER
+    LTEXT "Cross window (ms)", IDC_LB_CROSS, 21, 124, 66, 8
+    PUSHBUTTON "?", IDC_QQ_CROSS, 85, 122, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_CROSS, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 122, 120, 14
+    EDITTEXT IDC_ED_CROSS, 221, 121, 30, 12, ES_RIGHT | ES_NUMBER
+
+    GROUPBOX "Trigger", IDC_GB_TRIGGER, 14, 186, 242, 82
+    AUTOCHECKBOX "Full-screen guard", IDC_CK_FSGUARD, 21, 199, 92, 10
+    PUSHBUTTON "?", IDC_QQ_FGS, 117, 197, 12, 11, BS_OWNERDRAW
+    LTEXT "Edges", IDC_LB_EDGES, 21, 218, 28, 8
+    PUSHBUTTON "?", IDC_QQ_EDGES, 53, 216, 12, 11, BS_OWNERDRAW
+    AUTORADIOBUTTON "Auto", IDC_RD_ED_AUTO, 95, 217, 34, 10, WS_GROUP
+    AUTORADIOBUTTON "Sides", IDC_RD_ED_SIDES, 149, 217, 38, 10
+    AUTOCHECKBOX "Left", IDC_CK_EDGE_L, 95, 233, 30, 10
+    AUTOCHECKBOX "Right", IDC_CK_EDGE_R, 145, 233, 34, 10
+    AUTOCHECKBOX "Top", IDC_CK_EDGE_T, 183, 233, 28, 10
+    AUTOCHECKBOX "Bottom", IDC_CK_EDGE_B, 215, 233, 38, 10
+    LTEXT "Reopen delay (s)", IDC_LB_REDELAY, 21, 249, 64, 8
+    PUSHBUTTON "?", IDC_QQ_REDELAY, 85, 247, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_REDELAY, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 247, 120, 14
+    EDITTEXT IDC_ED_REDELAY, 221, 246, 30, 12, ES_RIGHT | ES_NUMBER
+
+    GROUPBOX "Popup", IDC_GB_POPUP, 14, 276, 242, 144
+    LTEXT "Popup side", IDC_LB_SIDE, 21, 290, 42, 8
+    PUSHBUTTON "?", IDC_QQ_SIDE, 65, 288, 12, 11, BS_OWNERDRAW
+    AUTORADIOBUTTON "Main monitor", IDC_RD_SIDE_MAIN, 95, 289, 62, 10, WS_GROUP
+    AUTORADIOBUTTON "Neighbor", IDC_RD_SIDE_NB, 177, 289, 52, 10
+    LTEXT "Chain mode", IDC_LB_CHAIN, 21, 306, 44, 8
+    PUSHBUTTON "?", IDC_QQ_CHAIN, 65, 304, 12, 11, BS_OWNERDRAW
+    AUTORADIOBUTTON "Neighbor only", IDC_RD_CHAIN_NB, 95, 305, 68, 10
+    AUTORADIOBUTTON "All in direction", IDC_RD_CHAIN_DIR, 181, 305, 74, 10
+    LTEXT "Leave grace (px)", IDC_LB_GRACE, 21, 322, 66, 8
+    PUSHBUTTON "?", IDC_QQ_GRACE, 85, 320, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_GRACE, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 320, 120, 14
+    EDITTEXT IDC_ED_GRACE, 221, 319, 30, 12, ES_RIGHT | ES_NUMBER
+    LTEXT "Stay time (s)", IDC_LB_STAY, 21, 338, 56, 8
+    PUSHBUTTON "?", IDC_QQ_STAY, 85, 336, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_STAY, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 336, 120, 14
+    EDITTEXT IDC_ED_STAY, 221, 335, 30, 12, ES_RIGHT | ES_NUMBER
+    LTEXT "List width (px)", IDC_LB_TITLE, 21, 354, 64, 8
+    PUSHBUTTON "?", IDC_QQ_TITLE, 85, 352, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_TITLE, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 352, 120, 14
+    EDITTEXT IDC_ED_TITLE, 221, 351, 30, 12, ES_RIGHT | ES_NUMBER
+    LTEXT "Card width (px)", IDC_LB_CARDW, 21, 370, 64, 8
+    PUSHBUTTON "?", IDC_QQ_CARDW, 85, 368, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_CARDW, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 368, 120, 14
+    EDITTEXT IDC_ED_CARDW, 221, 367, 30, 12, ES_RIGHT | ES_NUMBER
+    AUTOCHECKBOX "Show icons", IDC_CK_ICONS, 21, 386, 56, 10
+    AUTOCHECKBOX "Show titles", IDC_CK_TITLES, 81, 386, 58, 10
+    AUTOCHECKBOX "Thumbnails", IDC_CK_THUMBS, 159, 386, 60, 10
+    PUSHBUTTON "?", IDC_QQ_SHOW, 227, 384, 12, 11, BS_OWNERDRAW
+    AUTOCHECKBOX "Peek on hover", IDC_CK_PEEK, 21, 402, 74, 10
+    PUSHBUTTON "?", IDC_QQ_PEEK, 227, 400, 12, 11, BS_OWNERDRAW
+    AUTOCHECKBOX "Close buttons on cards", IDC_CK_CLOSEBTN, 120, 402, 90, 10
+    PUSHBUTTON "?", IDC_QQ_CLOSEBTN, 208, 400, 12, 11, BS_OWNERDRAW
+
+    GROUPBOX "Windows", IDC_GB_WINDOWS, 14, 428, 242, 30
+    LTEXT "Virtual desktops", IDC_LB_VD, 21, 441, 72, 8
+    PUSHBUTTON "?", IDC_QQ_VD, 95, 439, 12, 11, BS_OWNERDRAW
+    AUTORADIOBUTTON "Current", IDC_RD_VD_CUR, 111, 440, 48, 10, WS_GROUP
+    AUTORADIOBUTTON "All", IDC_RD_VD_ALL, 181, 440, 36, 10
+
+    // --- Taskbar arrows page ----------------------------------------------
+    CONTROL "Activate arrows on taskbar", IDC_SW_ARROWS, "EdgePopSwitch",
+        WS_TABSTOP, 14, 58, 180, 14
+    PUSHBUTTON "?", IDC_QQ_TB_ARROWS, 200, 60, 12, 11, BS_OWNERDRAW
+
+    GROUPBOX "Persistent", IDC_GB_PERSIST, 14, 88, 242, 46
+    AUTOCHECKBOX "Numbers", IDC_CK_TB_PNUM, 21, 100, 56, 10
+    AUTOCHECKBOX "Arrows", IDC_CK_TB_PARR, 81, 100, 50, 10
+    AUTOCHECKBOX "Background", IDC_CK_TB_PBG, 150, 100, 66, 10
+    PUSHBUTTON "?", IDC_QQ_TB_PBG, 235, 98, 12, 11, BS_OWNERDRAW
+    LTEXT "Size (px)", IDC_LB_TB_PSIZE, 21, 116, 64, 8
+    PUSHBUTTON "?", IDC_QQ_TB_PSIZE, 85, 114, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_TB_PSIZE, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 114, 120, 14
+    EDITTEXT IDC_ED_TB_PSIZE, 221, 113, 30, 12, ES_RIGHT | ES_NUMBER
+
+    GROUPBOX "Hover", IDC_GB_HOVER, 14, 140, 242, 46
+    AUTOCHECKBOX "Numbers", IDC_CK_TB_NUM, 21, 152, 56, 10
+    AUTOCHECKBOX "Arrows", IDC_CK_TB_ARR, 81, 152, 50, 10
+    AUTOCHECKBOX "Background", IDC_CK_TB_HBG, 150, 152, 66, 10
+    PUSHBUTTON "?", IDC_QQ_TB_HBG, 235, 150, 12, 11, BS_OWNERDRAW
+    LTEXT "Size (px)", IDC_LB_TB_HSIZE, 21, 168, 64, 8
+    PUSHBUTTON "?", IDC_QQ_TB_HSIZE, 85, 166, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_TB_HSIZE, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 166, 120, 14
+    EDITTEXT IDC_ED_TB_HSIZE, 221, 165, 30, 12, ES_RIGHT | ES_NUMBER
+
+    LTEXT "Shape", IDC_LB_TB_SHAPE, 14, 194, 40, 8
+    PUSHBUTTON "?", IDC_QQ_TB_SHAPE, 82, 192, 12, 11, BS_OWNERDRAW
+    AUTORADIOBUTTON "Triangle", IDC_RD_TB_TRI, 98, 193, 48, 10, WS_GROUP
+    AUTORADIOBUTTON "Chevron", IDC_RD_TB_CHEV, 164, 193, 46, 10
+    AUTORADIOBUTTON "Arrow", IDC_RD_TB_ARR, 212, 193, 42, 10
+    LTEXT "Position", IDC_LB_TB_SPOT, 14, 210, 64, 8
+    PUSHBUTTON "?", IDC_QQ_TB_SPOT, 82, 208, 12, 11, BS_OWNERDRAW
+    AUTORADIOBUTTON "Left", IDC_RD_TB_POS_L, 98, 209, 34, 10, WS_GROUP
+    AUTORADIOBUTTON "Center", IDC_RD_TB_POS_C, 152, 209, 42, 10
+    AUTORADIOBUTTON "Right", IDC_RD_TB_POS_R, 198, 209, 38, 10
+    // Appearance row: label like Size/Shape/Position; Color +
+    // swatch + Shadow side by side in the right-hand control zone.
+    LTEXT "Appearance", IDC_LB_TB_APPEAR, 14, 226, 44, 8
+    PUSHBUTTON "?", IDC_QQ_TBCOLOR, 62, 224, 12, 11, BS_OWNERDRAW
+    PUSHBUTTON "Color...", IDC_BTN_TB_COLOR, 95, 225, 40, 12
+    LTEXT "", IDC_ST_TBSWATCH, 138, 227, 12, 8, WS_BORDER
+    AUTOCHECKBOX "Shadow", IDC_CK_TB_SHADOW, 175, 225, 44, 10
+
+    // --- shared bottom (never inside a page) -------------------------------
+    CONTROL "Start with Windows", IDC_SW_STARTWIN, "EdgePopSwitch",
+        WS_TABSTOP, 14, 472, 170, 14
+    PUSHBUTTON "?", IDC_QQ_START, 190, 474, 12, 11, BS_OWNERDRAW
+
+    PUSHBUTTON "Advanced...", IDC_BTN_ADVANCED, 7, 490, 56, 14
+    PUSHBUTTON "Reset to defaults", IDC_BTN_RESET, 134, 490, 78, 14
+    DEFPUSHBUTTON "Close", IDOK, 216, 490, 45, 14
+END
+
+// About: icon, semibold name, version, the free-app line,
+// copyright, the site link and a prominent Donate button.
+IDD_ABOUT DIALOGEX 0, 0, 210, 140
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About EdgePOP"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    ICON IDI_APPICON, IDC_IC_APP, 14, 10, 15, 17
+    LTEXT "EdgePOP by KitKarl", IDC_ST_ABOUT_TITLE, 37, 11, 160, 12
+    LTEXT "Version", IDC_ST_ABOUT_VER, 37, 26, 160, 8
+    LTEXT "Easily find your windows on multi-monitors!",
+        IDC_ST_ABOUT_FREE, 14, 48, 182, 8
+    CONTROL "kitkarl.com", IDC_LINK_SITE, "SysLink", WS_TABSTOP, 14, 72, 150, 10
+    LTEXT "(c) 2026 KitKarl", IDC_ST_ABOUT_COPY, 14, 90, 100, 8
+    DEFPUSHBUTTON "Donate", IDC_BTN_DONATE, 94, 118, 55, 14
+    PUSHBUTTON "Close", IDCANCEL, 158, 118, 45, 14
+END
+
+// Startup splash: borderless, never activated; closes itself on a
+// timer, any click, or the site link. Version/title/copyright reuse the
+// About ids; the text is filled in at init.
+IDD_SPLASH DIALOGEX 0, 0, 200, 92
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP
+EXSTYLE WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    ICON IDI_APPICON, IDC_IC_APP, 14, 10, 15, 17
+    LTEXT "EdgePOP by KitKarl", IDC_ST_ABOUT_TITLE, 37, 11, 150, 12
+    LTEXT "Version", IDC_ST_ABOUT_VER, 37, 26, 150, 8
+    CONTROL "kitkarl.com", IDC_LINK_SITE, "SysLink", WS_TABSTOP, 14, 52, 160, 10
+    LTEXT "(c) 2026 KitKarl", IDC_ST_ABOUT_COPY, 14, 72, 100, 8
+END
+
+// (?) help card: borderless, sized/positioned next to the (?) at
+// runtime; title in accent-dark, wrapped body below.
+IDD_HELP DIALOGEX 0, 0, 200, 90
+STYLE DS_SETFONT | WS_POPUP
+EXSTYLE WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT "Title", IDC_ST_HELP_TITLE, 10, 8, 180, 10
+    LTEXT "Body", IDC_ST_HELP_BODY, 10, 24, 180, 60
+END
+
+IDD_ADVANCED DIALOGEX 0, 0, 214, 152
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "EdgePOP by KitKarl - Advanced"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    AUTOCHECKBOX "Debug strips", IDC_CK_DEBUG, 14, 12, 66, 10
+    PUSHBUTTON "Rebuild edge strips", IDC_BTN_REBUILD, 14, 30, 92, 14
+    LTEXT "Never list these apps (exe names, comma-separated):",
+        IDC_LB_EXCLUDE, 14, 52, 186, 8
+    PUSHBUTTON "?", IDC_QQ_EXCLUDE, 196, 50, 12, 11, BS_OWNERDRAW
+    EDITTEXT IDC_ED_EXCLUDE, 14, 64, 194, 14, ES_AUTOHSCROLL
+    LTEXT "Debug: magenta seam strips + the log next to the exe. Exclude: background helpers and splash screens that never belong in the popup.",
+        IDC_ST_ADVDESC, 14, 86, 186, 28
+    DEFPUSHBUTTON "Close", IDOK, 162, 132, 45, 14
+END

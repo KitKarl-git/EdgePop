@@ -1,0 +1,41 @@
+// EdgePOP by KitKarl - version resource.
+#include <winres.h>
+#include "resource.h"
+
+#define VER_FILEVERSION    1,2,0,0
+#define VER_FILEVERSIONSTR "1.2.0.0"
+
+// Visual styles (comctl32 v6) + per-monitor DPI v2.
+1 RT_MANIFEST "edgepop.manifest"
+
+// App icon.
+IDI_APPICON ICON "app.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    VER_FILEVERSION
+ PRODUCTVERSION VER_FILEVERSION
+ FILEFLAGSMASK  0x3fL
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "KitKarl"
+            VALUE "FileDescription",  "EdgePOP by KitKarl - edge-of-monitor window switcher"
+            VALUE "FileVersion",      VER_FILEVERSIONSTR
+            VALUE "InternalName",     "EdgePop"
+            VALUE "OriginalFilename", "EdgePop.exe"
+            VALUE "ProductName",      "EdgePOP by KitKarl"
+            VALUE "ProductVersion",   EDGEPOP_VERSION_TXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+

@@ -1,0 +1,8 @@
+# Normalize line endings; repo stores LF, working tree gets native
+* text=auto
+
+# Windows-specific binaries
+*.rc text
+*.cur binary
+*.ico binary
+*.png binary
