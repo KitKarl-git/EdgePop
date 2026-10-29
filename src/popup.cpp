@@ -51,13 +51,17 @@ constexpr float kCornerR = 8.0f;
 constexpr float kXBtnSz = 28.0f;      // the square's side
 constexpr float kXProtrude = 24.0f;   // rise above the panel top edge
 constexpr float kXInsetX = 10.0f;     // right inset from the panel edge
-// Per-card close: a small circle floating ON the preview's
-// top-right corner, taskbar-style. DWM thumbnails composite above
-// everything - nothing can sit on a LIVE preview - so cards
-// render as fresh still frames while the close buttons are on; the live
-// DWM path remains for card_close_buttons = off.
+// Per-card close: a small circle floating in a reserved band ABOVE the
+// preview slot's top edge, taskbar-style. A live DWM thumbnail composites
+// above everything - nothing can sit on its pixels - so the band keeps
+// the circle outside the preview and cards stay live with the buttons
+// on and off alike.
 constexpr float kCardXSz = 16.0f;     // close circle diameter
 constexpr float kCardXInset = 6.0f;   // circle inset from the slot corner
+constexpr float kCardXBand = 24.0f;   // reserved band above the slot when
+                                      // the close buttons are on (16 px
+                                      // circle + 4 px breathing room);
+                                      // buttons off = the 8 px rest pad
 
 // Width: the list popup is as narrow as its content allows,
 // floored here and capped by the max_width setting. Cards have their own
@@ -332,17 +336,24 @@ ID2D1Bitmap* CardIconFor(const WindowItem& item, UINT size) {
 //
 // DWM live thumbnails cannot ride the pop-in animation, so a fresh show
 // waits ~240 ms before the preview appears. To close that gap, every popup
-// close captures a static snapshot of each listed window (PrintWindow +
-// PW_RENDERFULLCONTENT reads the DWM surface directly - hardware-
-// accelerated windows included, and it does not block on the target's
-// message pump the way WM_PRINTCLIENT would). The next show draws the
-// snapshot instantly - it is swapchain content, so it animates with the
-// card - and the live thumbnail seamlessly replaces it.
+// close captures a static snapshot of each listed window by reading the
+// COMPOSED SCREEN over the window's visible bounds - no message ever
+// enters the foreign window (PrintWindow + PW_RENDERFULLCONTENT used to
+// live here and permanently froze custom-chrome apps that must service
+// its synchronous render request on their UI thread - Windscribe was the
+// repro; gotcha 27). The next show draws the snapshot instantly - it is
+// swapchain content, so it animates with the card - and the live
+// thumbnail seamlessly replaces it.
 std::map<HWND, ComPtr<ID2D1Bitmap>> g_snapCache;
 
 ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     RECT rc{};
-    if (!GetClientRect(src, &rc)) return nullptr;
+    // Extended frame bounds = the visible window, shadow excluded;
+    // GetWindowRect on framed windows includes invisible resize borders.
+    if (FAILED(DwmGetWindowAttribute(src, DWMWA_EXTENDED_FRAME_BOUNDS,
+                                     &rc, sizeof(rc)))) {
+        if (!GetWindowRect(src, &rc)) return nullptr;
+    }
     const int w = rc.right - rc.left;
     const int h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0 || w > 4096 || h > 4096) return nullptr;
@@ -358,12 +369,18 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     HBITMAP dib =
         CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!dib) return nullptr;
-    HDC hdc = CreateCompatibleDC(nullptr);
-    HGDIOBJ old = SelectObject(hdc, dib);
-    const BOOL ok =
-        PrintWindow(src, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
-    SelectObject(hdc, old);
-    DeleteDC(hdc);
+    HDC screen = GetDC(nullptr);
+    HDC hdc = screen ? CreateCompatibleDC(screen) : nullptr;
+    BOOL ok = FALSE;
+    if (screen && hdc) {
+        HGDIOBJ old = SelectObject(hdc, dib);
+        // CAPTUREBLT pulls in layered windows the plain blit skips.
+        ok = BitBlt(hdc, 0, 0, w, h, screen, rc.left, rc.top,
+                    SRCCOPY | CAPTUREBLT);
+        SelectObject(hdc, old);
+    }
+    if (hdc) DeleteDC(hdc);
+    if (screen) ReleaseDC(nullptr, screen);
 
     ComPtr<ID2D1Bitmap> bmp;
     if (ok) {
@@ -418,28 +435,31 @@ void CacheSnapshots(const std::vector<WindowItem>& items) {
 // --- peek-on-hover ghosting ------------------------------------
 //
 // Taskbar-preview behavior: while an entry is hovered, every OTHER window
-// on that entry's monitor is hidden (alpha 1/255 - invisible but still
-// hit-testable, see; alpha 0 would let clicks fall through).
-// Windows are ghosted by temporarily adding WS_EX_LAYERED and restoring
-// the exact prior state on un-hover. Already-layered windows get their
-// original attributes back verbatim.
+// on that entry's monitor is hidden, leaving only the hovered window
+// visible on the desktop. Hiding = moving the window fully outside the
+// virtual screen and restoring its exact rect afterwards - the only
+// cross-process hide that provably cannot damage a foreign renderer:
+// the app keeps rendering (the swapchain never notices a position
+// change), its DWM thumbnail stays alive and the taskbar button stays.
+// Every alternative maims or is denied (D-068 probes): toggling
+// WS_EX_LAYERED on a non-layered window kills flip-model D3D swapchains
+// for good; SetLayeredWindowAttributes on a NATIVELY layered window
+// (Qt translucent chrome - Windscribe) hijacks it out of its
+// UpdateLayeredWindow mode and it never draws again; DWMWA_CLOAK is
+// owner/shell-only (E_ACCESSDENIED from outside); SW_HIDE drops the
+// taskbar buttons. Apps that veto the move (WM_WINDOWPOSCHANGING) are
+// skipped - peek degrades to leaving them visible.
 struct Ghosted {
     HWND hwnd;
-    bool weAddedLayered;
-    BYTE alpha;
-    DWORD flags;
-    COLORREF key;
+    RECT rc;    // exact pre-move rect
 };
 std::vector<Ghosted> g_ghosted;
 
 void UnghostAll() {
     for (const auto& g : g_ghosted) {
         if (!IsWindow(g.hwnd)) continue;
-        SetLayeredWindowAttributes(g.hwnd, g.key, g.alpha, g.flags);
-        if (g.weAddedLayered) {
-            const LONG_PTR ex = GetWindowLongPtrW(g.hwnd, GWL_EXSTYLE);
-            SetWindowLongPtrW(g.hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
-        }
+        SetWindowPos(g.hwnd, nullptr, g.rc.left, g.rc.top, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
     g_ghosted.clear();
 }
@@ -452,25 +472,18 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
     const auto others = EnumerateWindowsOnMonitor(mon, vd);
     PLog(L"peek: %d window(s) on the hovered monitor, keeping hwnd=0x%p",
          static_cast<int>(others.size()), keep);
+    const int vsL = GetSystemMetrics(SM_XVIRTUALSCREEN);
     for (const auto& w : others) {
         if (w.hwnd == keep || w.minimized || !IsWindow(w.hwnd)) continue;
-        Ghosted g{};
-        g.hwnd = w.hwnd;
-        const LONG_PTR ex = GetWindowLongPtrW(w.hwnd, GWL_EXSTYLE);
-        if (ex & WS_EX_LAYERED) {
-            g.weAddedLayered = false;
-            g.alpha = 255;
-            g.flags = LWA_ALPHA;
-            GetLayeredWindowAttributes(w.hwnd, &g.key, &g.alpha, &g.flags);
-        } else {
-            g.weAddedLayered = true;
-            g.alpha = 255;
-            g.flags = LWA_ALPHA;
-            g.key = 0;
-            SetWindowLongPtrW(w.hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+        RECT rc{};
+        if (!GetWindowRect(w.hwnd, &rc)) continue;
+        const int width = rc.right - rc.left;
+        // Fully left of the virtual screen, unchanged top: same monitor
+        // order, minimal surprise on restore.
+        if (SetWindowPos(w.hwnd, nullptr, vsL - width - 64, rc.top, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)) {
+            g_ghosted.push_back({ w.hwnd, rc });
         }
-        SetLayeredWindowAttributes(w.hwnd, 0, 1, LWA_ALPHA);
-        g_ghosted.push_back(g);
     }
 }
 
@@ -750,7 +763,7 @@ void Popup::Show(const Segment& segment, const MonitorRect& main,
     const float rowH = kRowH * scale_;
     const float headerH = kHeaderH * scale_;
     const float cardH =
-        (kCardPadY + kCardPadBottom) * scale_ + slotH + stripH * scale_;
+        (CardTopPad() + kCardPadBottom) * scale_ + slotH + stripH * scale_;
     auto rowHeight = [&](const RowInfo& r) {
         return r.isHeader ? headerH : (r.card ? cardH : rowH);
     };
@@ -851,9 +864,9 @@ void Popup::Show(const Segment& segment, const MonitorRect& main,
     visible_ = true;
     Render();
     StartAnimation();
-    // Preview work waits out the pop-in (kThumbDelayMs): register live
-    // thumbnails (buttons off) or capture missing still frames one per
-    // tick - the poll timer drives it.
+    // Preview work waits out the pop-in (kThumbDelayMs): live
+    // thumbnails then register in both close-button modes - the poll
+    // timer drives it.
     thumbsPending_ = s.thumbnails;
 }
 
@@ -862,9 +875,6 @@ void Popup::Hide() {
     KillTimer(hwnd_, kPollTimer);
     KillTimer(hwnd_, kVerifyFgTimer);
     UnghostAll();                  // never leave a ghosted desktop behind
-    // Refresh the last-known snapshots while the listed
-    // windows' content is what the user just saw.
-    if (settings_.thumbnails) CacheSnapshots(items_);
     UnregisterThumbnails();   // plan: previews live only while visible
     // Snap the visual to rest (also cancels a running animation) so the
     // next Show starts from a clean state.
@@ -877,6 +887,13 @@ void Popup::Hide() {
     ShowWindow(hwnd_, SW_HIDE);
     visible_ = false;
     hoverRow_ = -1;
+    // Snapshots now read the composed screen, so let the DWM drop this
+    // popup's pixels first - chain mode can list windows that sit under
+    // it, and a capture racing the hide would embed popup pixels.
+    if (settings_.thumbnails && !items_.empty()) {
+        Sleep(32);
+        CacheSnapshots(items_);
+    }
 }
 
 void Popup::OnOutsideMouseDown(POINT pt) {
@@ -910,10 +927,8 @@ void Popup::OnMouseWheel(int delta) {
     if (off == scrollOff_) return;
     scrollOff_ = off;
     Render();
-    if (!settings_.cardCloseButtons) {
-        UnregisterThumbnails();
-        RegisterThumbnails();
-    }
+    UnregisterThumbnails();
+    RegisterThumbnails();
     RecomputeHover();
 }
 
@@ -1011,7 +1026,7 @@ void Popup::RebuildInPlace() {
     const float rowH = kRowH * scale_;
     const float headerH = kHeaderH * scale_;
     const float cardH =
-        (kCardPadY + kCardPadBottom) * scale_ + slotH + stripH * scale_;
+        (CardTopPad() + kCardPadBottom) * scale_ + slotH + stripH * scale_;
     auto rowHeight = [&](const RowInfo& r) {
         return r.isHeader ? headerH : (r.card ? cardH : rowH);
     };
@@ -1059,25 +1074,6 @@ float Popup::CardSlotH(float popupW) const {
     const float lo = kThumbSlotH * scale_;
     const float hi = kThumbSlotHMax * scale_;
     return byAspect < lo ? lo : (byAspect > hi ? hi : byAspect);
-}
-
-// Still-frame cards: capture ONE uncached window per poll tick.
-// PrintWindow forces the target to render - capturing a whole list at
-// once hitches the popup mid-glance. Windows already carrying a snapshot
-// keep it: the cache is refreshed wholesale at popup close.
-void Popup::RefreshMissingSnapshot() {
-    for (const auto& it : items_) {
-        if (it.minimized || !it.hwnd || !IsWindow(it.hwnd)) continue;
-        if (IsIconic(it.hwnd)) continue;         // blank capture, skip
-        if (g_snapCache.count(it.hwnd)) continue;
-        ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(it.hwnd);
-        if (!bmp) continue;   // un-capturable now; don't retry forever
-        if (g_snapCache.size() > 24) g_snapCache.clear();
-        g_snapCache[it.hwnd] = std::move(bmp);
-        Render();
-        return;
-    }
-    thumbsPending_ = false;
 }
 
 // Rows shifted under a stationary cursor after a rebuild: re-derive the
@@ -1218,18 +1214,25 @@ void Popup::VerifyForeground() {
     }
 }
 
-// Live DWM previews (phase 5; the card_close_buttons = off path since
-// - with buttons on, cards are still frames so the close circle
-// can sit ON the preview). Registered only while the popup is visible,
-// and delayed past the compositor pop-in: IDCompositionAnimation moves the
-// visual tree, not DWM-composited thumbnails, so an early registration
-// would sit frozen while the card scales in. The destination rect
-// letterboxes the source's client size inside the card's preview slot.
-// Failures (dead window, cross-adapter, protected content) keep the card's
-// placeholder; the holes are punched by the re-render at the end.
+// Vertical pad above a card's preview slot: the close circle's reserved
+// band when the buttons are on (the circle must sit outside the live
+// preview's pixels), the slim rest pad otherwise.
+float Popup::CardTopPad() const {
+    return settings_.cardCloseButtons ? kCardXBand : kCardPadY;
+}
+
+// Live DWM previews (phase 5), registered in both close-button modes -
+// the circle sits in the band above the slot, never on the preview.
+// Registered only while the popup is visible, and delayed past the
+// compositor pop-in: IDCompositionAnimation moves the visual tree, not
+// DWM-composited thumbnails, so an early registration would sit frozen
+// while the card scales in. The destination rect letterboxes the
+// source's client size inside the card's preview slot.
+// Failures (dead window, cross-adapter, protected content) keep the
+// card's placeholder; the holes are punched by the re-render at the end.
 void Popup::RegisterThumbnails() {
     thumbsPending_ = false;
-    if (!hwnd_ || !visible_ || settings_.cardCloseButtons) return;
+    if (!hwnd_ || !visible_) return;
     // Scroll viewport: thumbnails letterbox within the VISIBLE
     // part of each slot - a dest reaching above the viewport would
     // composite over the close-tab band (they float above
@@ -1427,7 +1430,7 @@ void Popup::Render() {
     const bool strip = settings_.showTitles || settings_.showIcons;
     const float slotH = CardSlotH(static_cast<float>(w));
     const float cardH =
-        (kCardPadY + kCardPadBottom +
+        (CardTopPad() + kCardPadBottom +
          (strip ? kThumbStripH : 0.0f)) *
         scale_ + slotH;
 
@@ -1514,12 +1517,11 @@ void Popup::Render() {
                 // a fill) is the hover signal - it reads however DWM
                 // composites the preview.
                 //
-                // Per-card close: the circle floats ON the
-                // preview's top-right corner - cards render as still
-                // frames while close buttons are on, because nothing can
-                // sit on a LIVE DWM preview; the live path
-                // stays for card_close_buttons = off.
-                const float slotTop = top + kCardPadY * scale_;
+                // Per-card close: the circle floats in the reserved band
+                // ABOVE the preview slot - a live DWM thumbnail composites
+                // above everything, so the circle must sit outside the
+                // preview pixels and cards stay live with the buttons on.
+                const float slotTop = top + CardTopPad() * scale_;
                 const float slotL = pad;
                 const float slotR = static_cast<float>(w) - pad;
                 const float slotB = slotTop + slotH;
@@ -1585,13 +1587,14 @@ void Popup::Render() {
                         }
                     }
                 }
-                // Per-card close circle ON the preview's corner:
-                // a dark backing keeps the glyph readable over any frame
-                // content; red on X-hover - the destructive signal.
+                // Per-card close circle in the band above the slot:
+                // a dark backing keeps the glyph readable on the panel;
+                // red on X-hover - the destructive signal.
                 if (settings_.cardCloseButtons) {
                     const float cs = kCardXSz * scale_;
                     const float cx0 = slotR - kCardXInset * scale_ - cs;
-                    const float cy0 = slotTop + kCardXInset * scale_;
+                    const float cy0 =
+                        top + (CardTopPad() * scale_ - cs) / 2.0f;
                     row.xCard = {
                         static_cast<LONG>(cx0 - 2.0f * scale_),
                         static_cast<LONG>(cy0 - 2.0f * scale_),
@@ -1901,16 +1904,12 @@ LRESULT CALLBACK Popup::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     if (!self.visible_) return 0;   // emptied out and hid
                 }
                 // Live previews wait out the pop-in (kThumbDelayMs), then
-                // register once; still-frame cards capture missing
-                // snapshots one per tick. The poll timer is the
+                // register once - in both close-button modes; the cache's
+                // snapshots only cover the gap. The poll timer is the
                 // only timer we run.
                 if (self.thumbsPending_ &&
                     now - self.showTick_ >= kThumbDelayMs) {
-                    if (self.settings_.cardCloseButtons) {
-                        self.RefreshMissingSnapshot();
-                    } else {
-                        self.RegisterThumbnails();
-                    }
+                    self.RegisterThumbnails();
                 }
                 // Presence-based close: works whichever side of the seam
                 // the cursor stopped on (fixes the neighbor-side bug) -

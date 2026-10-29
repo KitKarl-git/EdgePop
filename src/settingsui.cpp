@@ -193,12 +193,12 @@ const HelpEntry kHelp[] = {
       L"the hovered window visible on the desktop. Everything returns "
       L"the moment the hover moves off or the popup closes." },
     { IDC_QQ_CLOSEBTN,
-      L"A close X floating on each preview corner.",
+      L"A close X floating above each preview's corner.",
       L"Close buttons on cards\n\n"
-      L"Adds a small round X on each preview's corner - click it to "
-      L"close that window. While this is on, previews are crisp still "
-      L"frames (a live preview can never have a button on top of it); "
-      L"turn it off for live previews without the X. The big square X "
+      L"Adds a small round X in a band above each preview's top-right "
+      L"corner - click it to close that window. Previews stay live with "
+      L"the buttons on or off: a live preview can never have a button "
+      L"painted on it, so the X sits just above it. The big square X "
       L"above the list only ever closes the popup itself." },
     { IDC_QQ_VD,
       L"List windows from the current virtual desktop only, or all.",

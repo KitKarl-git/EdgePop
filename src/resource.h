@@ -9,7 +9,7 @@
 #define IDI_APPICON         201
 
 // Displayed version, single source for version.rc and the About box.
-#define EDGEPOP_VERSION_TXT "1.2.1"
+#define EDGEPOP_VERSION_TXT "1.2.2"
 
 // The two outward-facing URLs: the site and the donate page.
 #define EDGEPOP_SITE_URL    "https://kitkarl.com"
