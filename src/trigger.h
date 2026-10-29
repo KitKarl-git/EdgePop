@@ -35,6 +35,13 @@ constexpr UINT kZoneTimerMs = 40;
 // trigger posts this message to the owner window; wp = segment index.
 constexpr UINT kZoneFireMsg = WM_APP + 0x10;
 
+// Mouse-down and wheel are likewise POSTED to the owner, never handled
+// in-hook (gotcha 24): the dismissal path hides the popup (re-render +
+// screen capture) and the wheel path re-renders and re-registers
+// thumbnails - far too heavy for the hook callback.
+constexpr UINT kMouseDownMsg = WM_APP + 0x11;
+constexpr UINT kMouseWheelMsg = WM_APP + 0x12;
+
 // Hook-path entry is on the class (OnTimerIfMoving); zones are built from
 // geometry::Segment lists.
 

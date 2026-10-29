@@ -18,6 +18,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <functional>
+#include <set>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -176,16 +177,40 @@ void FakeKeyPress() {
     SendInput(2, in, sizeof(INPUT));
 }
 
-void FakeAltPress() {
-    // The escalation key: ALT is the interaction the foreground lock
-    // honors most reliably.
-    INPUT in[2] = {};
+// ALT held DOWN ACROSS the SetForegroundWindow call - the canonical
+// form of the unlock: with a modifier logically down the system
+// believes a keyboard interaction is in flight and honors the switch
+// (press-release BEFORE the call often does not, observed on Win11
+// 26200: SFGW returns TRUE, the foreground goes NULL and reverts).
+void FakeAltHold(bool down) {
+    INPUT in[1] = {};
     in[0].type = INPUT_KEYBOARD;
     in[0].ki.wVk = VK_MENU;
-    in[1].type = INPUT_KEYBOARD;
-    in[1].ki.wVk = VK_MENU;
-    in[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(2, in, sizeof(INPUT));
+    in[0].ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+    SendInput(1, in, sizeof(INPUT));
+}
+
+// Pids that re-assert the foreground after losing it (WeChat repro):
+// the first bounced switch registers them, and every later switch
+// AWAY from one skips the soft land-bounce juggling and forces in a
+// single decisive transition. Session-lifetime; bounded.
+std::set<DWORD> g_fighterPids;
+
+// The forced switch, in rising order of visual cost:
+// SwitchToThisWindow is the taskbar's own switch primitive (NT-era,
+// still exported) and activates WITHOUT the minimize/restore
+// animation; the dance always works but animates the window out of
+// the taskbar, so it is the last resort only.
+void ForceForeground(HWND target) {
+    SwitchToThisWindow(target, TRUE);
+    if (GetForegroundWindow() == target) {
+        PLog(L"force: SwitchToThisWindow ok");
+        return;
+    }
+    ShowWindow(target, SW_MINIMIZE);
+    ShowWindow(target, SW_RESTORE);
+    if (GetForegroundWindow() != target) SetForegroundWindow(target);
+    PLog(L"force: minimize/restore fallback");
 }
 
 // Per-scale cached resources, rebuilt when the DPI scale changes. Called
@@ -473,9 +498,19 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
     const auto others = EnumerateWindowsOnMonitor(mon, vd);
     PLog(L"peek: %d window(s) on the hovered monitor, keeping hwnd=0x%p",
          static_cast<int>(others.size()), keep);
+    // Never ghost the FOREGROUND window: moving the window the user is
+    // in out of the virtual screen and back makes focus-recovery apps
+    // (WeChat repro) re-assert themselves the moment a popup click
+    // takes the foreground away - the switch bounces back within
+    // ~100 ms. It stays visible instead; every other window still
+    // hides, so peek degrades only when the window being left shares
+    // the hovered monitor.
+    const HWND fg = GetForegroundWindow();
     const int vsL = GetSystemMetrics(SM_XVIRTUALSCREEN);
     for (const auto& w : others) {
-        if (w.hwnd == keep || w.minimized || !IsWindow(w.hwnd)) continue;
+        if (w.hwnd == keep || w.hwnd == fg || w.minimized ||
+            !IsWindow(w.hwnd))
+            continue;
         RECT rc{};
         if (!GetWindowRect(w.hwnd, &rc)) continue;
         const int width = rc.right - rc.left;
@@ -874,7 +909,7 @@ void Popup::Show(const Segment& segment, const MonitorRect& main,
     thumbsPending_ = s.thumbnails;
 }
 
-void Popup::Hide() {
+void Popup::Hide(bool capture) {
     if (!hwnd_) return;
     KillTimer(hwnd_, kPollTimer);
     KillTimer(hwnd_, kVerifyFgTimer);
@@ -894,7 +929,10 @@ void Popup::Hide() {
     // Snapshots now read the composed screen, so let the DWM drop this
     // popup's pixels first - chain mode can list windows that sit under
     // it, and a capture racing the hide would embed popup pixels.
-    if (settings_.thumbnails && !items_.empty()) {
+    // capture=false: the caller (the click-to-switch path) is in a
+    // hurry - the switch must run while the click's input entitlement
+    // is still ours - and defers the settle+capture to its verify tick.
+    if (capture && settings_.thumbnails && !items_.empty()) {
         Sleep(32);
         CacheSnapshots(items_);
     }
@@ -1161,12 +1199,44 @@ void Popup::DismissSuppressed() {
 void Popup::ActivateItem(int item) {
     if (item < 0 || item >= static_cast<int>(items_.size())) return;
     HWND target = items_[item].hwnd;
-    Hide();
-    if (!target || !IsWindow(target)) return;
+    HWND fgNow0 = GetForegroundWindow();
+    if (!target || !IsWindow(target)) {
+        Hide();
+        return;
+    }
+    // Switch FIRST, hide after: the foreground right a real click
+    // grants this process is fleeting - every millisecond between the
+    // button-down and the SetForegroundWindow (the old Hide() ran a
+    // 32 ms settle sleep plus screen captures here) is a window where
+    // the button-up, delivered to whatever sits under the vanishing
+    // popup, hands that right to another queue and the switch is
+    // silently refused. Hide() runs right after, its slow capture
+    // deferred to the verify tick.
+    UnregisterThumbnails();   // previews die with the popup either way
     if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
-    FakeKeyPress();
-    SetForegroundWindow(target);
+    // Leaving a KNOWN re-asserter: any soft switch will land, bounce
+    // within ~100 ms and force anyway - skip that juggling and force
+    // in one decisive (animation-free) transition.
+    DWORD fgPid = 0;
+    if (fgNow0) GetWindowThreadProcessId(fgNow0, &fgPid);
+    if (fgPid && g_fighterPids.count(fgPid)) {
+        PLog(L"activate: fg pid %lu is a known re-asserter - forcing",
+             fgPid);
+        ForceForeground(target);
+    } else {
+        FakeKeyPress();
+        const BOOL sfgw0 = SetForegroundWindow(target);
+        PLog(L"activate: target=0x%p fg-before=0x%p SHIFT-SFGW -> %d "
+             L"fg=0x%p",
+             target, fgNow0, static_cast<int>(sfgw0),
+             GetForegroundWindow());
+    }
 
+    Hide(false);
+    capturePending_ = settings_.thumbnails && !items_.empty();
+    verifyNullRetries_ = 0;
+    verifyStick_ = false;
+    verifyDanced_ = false;
     // The switch lands ASYNCHRONOUSLY: checking immediately used to fail
     // and fire the escalation (whose minimize/restore step animates the
     // window out of the taskbar even when it was never minimized).
@@ -1178,47 +1248,127 @@ void Popup::ActivateItem(int item) {
 void Popup::VerifyForeground() {
     if (!verifyTarget_ || !IsWindow(verifyTarget_)) {
         verifyTarget_ = nullptr;
+        verifyStick_ = false;
         return;
     }
-    if (GetForegroundWindow() == verifyTarget_) {
-        verifyTarget_ = nullptr;
+    const HWND target = verifyTarget_;
+
+    if (GetForegroundWindow() == target) {
+        if (verifyStick_) {
+            // Landed AND stuck - done.
+            verifyTarget_ = nullptr;
+            verifyStick_ = false;
+            return;
+        }
+        // Landed - but a soft switch can BOUNCE back within ~100 ms
+        // (observed: an app that was peek-moved off-screen and back
+        // re-asserts itself right after losing focus, and the OS
+        // accepts the re-assert). Confirm it sticks before calling
+        // the switch done.
+        verifyStick_ = true;
+        SetTimer(hwnd_, kVerifyFgTimer, 150, nullptr);
         return;
     }
-    HWND target = verifyTarget_;
-    verifyTarget_ = nullptr;
 
-    // Escalation 1: the ALT keypress, then retry.
-    FakeAltPress();
-    SetForegroundWindow(target);
-    if (GetForegroundWindow() == target) return;
+    if (!verifyStick_) {
+        HWND fgNow = GetForegroundWindow();
+        // A refused switch on this build momentarily reports NO
+        // foreground (NULL) while the OS quietly puts the old window
+        // back - and the attach workaround below needs a real
+        // foreground thread. Bounded wait-it-out via the timer
+        // instead of skipping the workaround.
+        if (!fgNow && verifyNullRetries_ < 3) {
+            ++verifyNullRetries_;
+            SetTimer(hwnd_, kVerifyFgTimer, 100, nullptr);
+            return;
+        }
+        verifyNullRetries_ = 0;
+        PLog(L"verify: target=0x%p fg=0x%p (initial switch failed)",
+             target, fgNow);
 
-    // Escalation 2: join the foreground's input queue - the documented
-    // workaround for the A -> B -> A refusal.
-    const DWORD ourThread = GetCurrentThreadId();
-    HWND fg = GetForegroundWindow();
-    const DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
-    const DWORD tgtThread = GetWindowThreadProcessId(target, nullptr);
-    if (fgThread && tgtThread && fgThread != tgtThread) {
-        AttachThreadInput(ourThread, fgThread, TRUE);
-        AttachThreadInput(ourThread, tgtThread, TRUE);
-        SetForegroundWindow(target);
-        BringWindowToTop(target);
-        AttachThreadInput(ourThread, tgtThread, FALSE);
-        AttachThreadInput(ourThread, fgThread, FALSE);
-    }
-    if (GetForegroundWindow() == target) return;
+        // Escalation 1: ALT held down ACROSS the retry - the
+        // canonical unlock; press-release before the call proved too
+        // weak here.
+        FakeAltHold(true);
+        const BOOL alt = SetForegroundWindow(target);
+        FakeAltHold(false);
+        PLog(L"verify: alt-hold SFGW -> %d fg=0x%p", static_cast<int>(alt),
+             GetForegroundWindow());
+        if (GetForegroundWindow() == target) {
+            verifyStick_ = true;
+            SetTimer(hwnd_, kVerifyFgTimer, 150, nullptr);
+            return;
+        }
 
-    // The minimize/restore dance would always work but animates the
-    // window out of the taskbar -
-    // only acceptable for windows that genuinely were minimized, where
-    // that animation is expected. Otherwise log and give up quietly.
-    if (IsIconic(target)) {
-        ShowWindow(target, SW_RESTORE);
-        SetForegroundWindow(target);
+        // Escalation 2: join the foreground's input queue - the
+        // documented workaround for the A -> B -> A refusal.
+        const DWORD ourThread = GetCurrentThreadId();
+        HWND fg = GetForegroundWindow();
+        const DWORD fgThread =
+            fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+        const DWORD tgtThread = GetWindowThreadProcessId(target, nullptr);
+        if (fgThread && tgtThread && fgThread != tgtThread) {
+            const BOOL a1 = AttachThreadInput(ourThread, fgThread, TRUE);
+            const BOOL a2 =
+                AttachThreadInput(ourThread, tgtThread, TRUE);
+            const BOOL sfgw = SetForegroundWindow(target);
+            BringWindowToTop(target);
+            PLog(L"verify: attach(%d,%d) SFGW->%d fg=0x%p",
+                 static_cast<int>(a1), static_cast<int>(a2),
+                 static_cast<int>(sfgw), GetForegroundWindow());
+            AttachThreadInput(ourThread, tgtThread, FALSE);
+            AttachThreadInput(ourThread, fgThread, FALSE);
+            if (GetForegroundWindow() == target) {
+                verifyStick_ = true;
+                SetTimer(hwnd_, kVerifyFgTimer, 150, nullptr);
+                return;
+            }
+        } else {
+            PLog(L"verify: attach skipped (fgThread=%u tgtThread=%u)",
+                 fgThread, tgtThread);
+        }
     } else {
-        PLog(L"popup: foreground switch refused even after escalation "
-             L"(hwnd=0x%p)", target);
+        // The landed switch BOUNCED - the loser took the foreground
+        // back. Register the re-asserter so the NEXT switch away from
+        // it forces in one step instead of juggling, then take the
+        // foreground back by force now.
+        verifyStick_ = false;
+        HWND th = GetForegroundWindow();
+        DWORD thPid = 0;
+        if (th) GetWindowThreadProcessId(th, &thPid);
+        if (thPid) {
+            if (g_fighterPids.size() >= 16) g_fighterPids.clear();
+            g_fighterPids.insert(thPid);
+        }
+        if (verifyDanced_) {
+            verifyTarget_ = nullptr;
+            PLog(L"popup: foreground switch refused even after "
+                 L"escalation + force (hwnd=0x%p)",
+                 target);
+            return;
+        }
+        PLog(L"verify: switch bounced (re-asserter pid %lu) - forcing",
+             thPid);
     }
+
+    // Final rung (and the bounce path): the forced switch -
+    // SwitchToThisWindow (animation-free) with the minimize/restore
+    // dance as its fallback. It is last because soft rungs, when they
+    // stick, are the least surprising transition; a forced switch is
+    // still far better than a dead click.
+    verifyDanced_ = true;
+    ForceForeground(target);
+    if (GetForegroundWindow() == target) {
+        PLog(L"verify: force ok");
+        verifyStick_ = true;
+        SetTimer(hwnd_, kVerifyFgTimer, 350, nullptr);
+        return;
+    }
+    verifyTarget_ = nullptr;
+    verifyStick_ = false;
+    PLog(L"popup: foreground switch refused even after escalation "
+         L"(hwnd=0x%p)",
+         target);
 }
 
 // Live DWM previews (phase 5), registered in both close-button modes -
@@ -1887,6 +2037,14 @@ LRESULT CALLBACK Popup::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == kVerifyFgTimer) {
                 KillTimer(hwnd, kVerifyFgTimer);
                 self.VerifyForeground();
+                // Deferred from the click path: by now the popup is
+                // hidden and the switch settled, so the capture
+                // settle sleep costs the clicker nothing.
+                if (self.capturePending_ && !self.verifyTarget_) {
+                    self.capturePending_ = false;
+                    Sleep(32);
+                    CacheSnapshots(self.items_);
+                }
                 return 0;
             }
             if (wp == kPollTimer) {

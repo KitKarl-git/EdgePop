@@ -626,6 +626,17 @@ LRESULT CALLBACK MsgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // heavy path runs here on the message loop, never in-hook.
             OnZoneFire(static_cast<size_t>(wp));
             return 0;
+        case edgepop::kMouseDownMsg:
+            // Outside-click dismissal, posted out of the LL hook (the
+            // hide path renders and captures the screen - gotcha 24).
+            OnAnyMouseDown(POINT{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) });
+            return 0;
+        case edgepop::kMouseWheelMsg:
+            // Popup overflow scroll, posted out of the LL hook (the
+            // scroll path re-renders and re-registers thumbnails).
+            OnAnyMouseWheel(static_cast<int>(
+                static_cast<short>(wp)));
+            return 0;
         case WM_APP_TRAY: {
             // NOTIFYICON_VERSION_4: LOWORD(lp) = event, cursor packed in wp.
             const UINT event = LOWORD(lp);

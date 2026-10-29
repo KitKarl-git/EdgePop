@@ -15,6 +15,7 @@ bool MouseButtonsHeld() {
 bool (*g_buttonsHeld)() = nullptr;
 
 EdgeZoneTrigger* g_instance = nullptr;
+HWND g_hookOwner = nullptr;   // where mouse-down/wheel get posted
 void (*g_onMouseDown)(POINT) = nullptr;
 void (*g_onMouseMove)(POINT) = nullptr;
 void (*g_onMouseWheel)(int) = nullptr;
@@ -31,14 +32,19 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wp, LPARAM lp) {
             g_instance->OnTimerIfMoving(info->pt);
             if (g_onMouseMove) g_onMouseMove(info->pt);
         } else if (wp == WM_MOUSEWHEEL) {
-            if (g_onMouseWheel) {
-                g_onMouseWheel(static_cast<short>(
-                    HIWORD(info->mouseData)));
+            if (g_onMouseWheel && g_hookOwner) {
+                PostMessageW(g_hookOwner, kMouseWheelMsg,
+                             static_cast<WPARAM>(static_cast<short>(
+                                 HIWORD(info->mouseData))),
+                             0);
             }
         } else if ((wp == WM_LBUTTONDOWN || wp == WM_RBUTTONDOWN ||
                     wp == WM_NCLBUTTONDOWN) &&
-                   g_onMouseDown) {
-            g_onMouseDown(info->pt);
+                   g_onMouseDown && g_hookOwner) {
+            // Posted, never run in-hook: the dismissal path hides the
+            // popup, which re-renders and captures the screen.
+            PostMessageW(g_hookOwner, kMouseDownMsg, 0,
+                         MAKELPARAM(info->pt.x, info->pt.y));
         }
     }
     return CallNextHookEx(nullptr, nCode, wp, lp);
@@ -77,6 +83,7 @@ void EdgeZoneTrigger::SetActivationConfig(int (*mode)(),
 void EdgeZoneTrigger::Install(HWND owner, void (*onFire)(size_t),
                                unsigned (*dwellMs)()) {
     owner_ = owner;
+    g_hookOwner = owner;
     SetCallbacks(onFire, dwellMs);
     g_instance = this;
     hook_ = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, nullptr, 0);

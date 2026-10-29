@@ -82,7 +82,9 @@ public:
               const Settings& s);
     // Replaces the content while visible: same position, no pop-in.
     void Refresh(const std::vector<PopupSection>& sections);
-    void Hide();
+    void Hide(bool capture = true);   // capture=false: fast hide for the
+                                      // click-to-switch path; the caller
+                                      // defers the snapshot settle+capture
     bool Visible() const { return hwnd_ != nullptr && visible_; }
     HWND hwnd() const { return hwnd_; }
 
@@ -170,6 +172,16 @@ private:
                                       // the popup was hovered
     ULONGLONG suppressUntil_ = 0;     // post-dismiss trigger pause
     ULONGLONG reconcileAtTick_ = 0;   // card-close content reconcile
+    bool capturePending_ = false;     // deferred snapshot capture (click
+                                      // path hides fast, captures at the
+                                      // verify tick)
+    int verifyNullRetries_ = 0;       // refused switches can read fg=NULL
+                                      // while the OS reverts - wait it out
+    bool verifyStick_ = false;        // switch landed; awaiting the
+                                      // stick check (soft switches can
+                                      // bounce back within ~100 ms)
+    bool verifyDanced_ = false;       // minimize/restore already tried
+                                      // for this switch - never loop
 
     std::map<HWND, HTHUMBNAIL> thumbs_;
     bool thumbsPending_ = false;      // waiting for the pop-in to settle
