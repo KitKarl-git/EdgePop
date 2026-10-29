@@ -28,11 +28,13 @@
 //
 // Close affordances: the popup's own close is a square tab that
 // PROTRUDES above the panel's top edge - clearly chrome, never part of a
-// card. Each card's close is a small round X in a reserved band ABOVE the
-// preview slot - a live DWM thumbnail composites above every window
-// (gotcha 18), so the circle must sit outside the preview pixels and
-// cards stay live in both modes; clicking it WM_CLOSEs that window and
-// the popup rebuilds in place.
+// card. Each card's close is a small rounded-square X riding the title
+// strip at
+// its far right, in line with the icon and app name (taskbar-flyout
+// style) - a live DWM thumbnail composites above every window (gotcha
+// 18), so the X must sit outside the preview pixels; the title
+// ellipsizes short of it. Clicking it WM_CLOSEs that window and the
+// popup rebuilds in place.
 #pragma once
 
 #include <windows.h>
@@ -118,10 +120,6 @@ private:
     void EnsureRenderStack();       // D3D11/DXGI/D2D/DWrite/DComp, once
     void Render();                  // full redraw at current size
     float CardSlotH(float popupW) const;  // preview slot height
-    // Vertical pad above a card's preview slot: the close circle's
-    // reserved band when the buttons are on (the circle must sit outside
-    // the live preview's pixels), the slim rest pad otherwise.
-    float CardTopPad() const;
     // Width sizing: cards live at card_width (floored 230, capped
     // 480); the icon+title list caps at max_width. NaturalWidth is the
     // single content-measuring pass shared by Show and RebuildInPlace -

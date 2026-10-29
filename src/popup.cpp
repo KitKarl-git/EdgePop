@@ -51,17 +51,17 @@ constexpr float kCornerR = 8.0f;
 constexpr float kXBtnSz = 28.0f;      // the square's side
 constexpr float kXProtrude = 24.0f;   // rise above the panel top edge
 constexpr float kXInsetX = 10.0f;     // right inset from the panel edge
-// Per-card close: a small circle floating in a reserved band ABOVE the
-// preview slot's top edge, taskbar-style. A live DWM thumbnail composites
-// above everything - nothing can sit on its pixels - so the band keeps
-// the circle outside the preview and cards stay live with the buttons
-// on and off alike.
-constexpr float kCardXSz = 16.0f;     // close circle diameter
-constexpr float kCardXInset = 6.0f;   // circle inset from the slot corner
-constexpr float kCardXBand = 24.0f;   // reserved band above the slot when
-                                      // the close buttons are on (16 px
-                                      // circle + 4 px breathing room);
-                                      // buttons off = the 8 px rest pad
+// Per-card close: a small rounded-square button riding the card's title
+// strip, flush right - in line with the icon and app name, Win11
+// taskbar-flyout style. A live DWM thumbnail composites above everything
+// - nothing can sit on its pixels (gotcha 18) - so the title strip,
+// outside the preview slot, is the row the X occupies; the title
+// ellipsizes short of it.
+constexpr float kCardXSz = 20.0f;     // close button side - same footprint
+                                      // as the strip's app icon
+constexpr float kCardXR = 5.0f;       // corner radius - the native
+                                      // flyout X is a rounded square
+constexpr float kCardXGap = 8.0f;     // title-to-X breathing room
 
 // Width: the list popup is as narrow as its content allows,
 // floored here and capped by the max_width setting. Cards have their own
@@ -105,7 +105,8 @@ constexpr float kColSoftR = 0xA8 / 255.0f, kColSoftG = 0x9E / 255.0f,
 constexpr float kColAccR = 0x3A / 255.0f, kColAccG = 0xB8 / 255.0f,
                 kColAccB = 0xA8 / 255.0f;
 // close-button additions: the square tab rests on a panel-lifted
-// fill; the per-card circle hovers warm red - the only red in the product,
+// fill; the per-card close button hovers warm red - the only red in the
+// product,
 // reserved for "this ends a real window" (the popup X never wears it).
 constexpr float kColLiftR = 0x35 / 255.0f, kColLiftG = 0x30 / 255.0f,
                 kColLiftB = 0x2B / 255.0f;
@@ -756,14 +757,17 @@ void Popup::Show(const Segment& segment, const MonitorRect& main,
 
     // Height: headers + rows (cards when thumbnails are on), plus the
     // close tab's protrusion above the panel, capped to the work
-    // area. The slot height depends on the final width.
+    // area. The slot height depends on the final width. The strip also
+    // hosts the card-close X, so it exists whenever the buttons are on.
     const float stripH =
-        (s.showTitles || s.showIcons) ? kThumbStripH : 0.0f;
+        (s.showTitles || s.showIcons || s.cardCloseButtons)
+            ? kThumbStripH
+            : 0.0f;
     const float slotH = CardSlotH(w);
     const float rowH = kRowH * scale_;
     const float headerH = kHeaderH * scale_;
     const float cardH =
-        (CardTopPad() + kCardPadBottom) * scale_ + slotH + stripH * scale_;
+        (kCardPadY + kCardPadBottom) * scale_ + slotH + stripH * scale_;
     auto rowHeight = [&](const RowInfo& r) {
         return r.isHeader ? headerH : (r.card ? cardH : rowH);
     };
@@ -1021,12 +1025,15 @@ void Popup::RebuildInPlace() {
                              ModeWidthOf(settings_) * scale_);
 
     const float stripH =
-        (settings_.showTitles || settings_.showIcons) ? kThumbStripH : 0.0f;
+        (settings_.showTitles || settings_.showIcons ||
+         settings_.cardCloseButtons)
+            ? kThumbStripH
+            : 0.0f;
     const float slotH = CardSlotH(w);
     const float rowH = kRowH * scale_;
     const float headerH = kHeaderH * scale_;
     const float cardH =
-        (CardTopPad() + kCardPadBottom) * scale_ + slotH + stripH * scale_;
+        (kCardPadY + kCardPadBottom) * scale_ + slotH + stripH * scale_;
     auto rowHeight = [&](const RowInfo& r) {
         return r.isHeader ? headerH : (r.card ? cardH : rowH);
     };
@@ -1214,15 +1221,8 @@ void Popup::VerifyForeground() {
     }
 }
 
-// Vertical pad above a card's preview slot: the close circle's reserved
-// band when the buttons are on (the circle must sit outside the live
-// preview's pixels), the slim rest pad otherwise.
-float Popup::CardTopPad() const {
-    return settings_.cardCloseButtons ? kCardXBand : kCardPadY;
-}
-
 // Live DWM previews (phase 5), registered in both close-button modes -
-// the circle sits in the band above the slot, never on the preview.
+// the X rides the title strip, never on the preview.
 // Registered only while the popup is visible, and delayed past the
 // compositor pop-in: IDCompositionAnimation moves the visual tree, not
 // DWM-composited thumbnails, so an early registration would sit frozen
@@ -1427,10 +1427,11 @@ void Popup::Render() {
     const float headerH = kHeaderH * scale_;
     const float pad = kPadX * scale_;
     const float iconSz = kIconSz * scale_;
-    const bool strip = settings_.showTitles || settings_.showIcons;
+    const bool strip = settings_.showTitles || settings_.showIcons ||
+                       settings_.cardCloseButtons;
     const float slotH = CardSlotH(static_cast<float>(w));
     const float cardH =
-        (CardTopPad() + kCardPadBottom +
+        (kCardPadY + kCardPadBottom +
          (strip ? kThumbStripH : 0.0f)) *
         scale_ + slotH;
 
@@ -1448,10 +1449,14 @@ void Popup::Render() {
         // layout at the popup edge; minimized windows
         // render dimmed. `shadow` adds the drop used by floating labels
         // (over-mode) so text stays readable on bright previews.
+        // `reserveR` keeps the last `reserveR` px of the row free (the
+        // card close X lives there) so the text ellipsizes short of it.
         auto drawTitle = [&](const WindowItem& item, float textLeft,
-                             float yTop, float h2, bool shadow = false) {
+                             float yTop, float h2, bool shadow = false,
+                             float reserveR = 0.0f) {
             if (!settings_.showTitles || !g_itemFmt || !g_text) return;
-            const float maxW = static_cast<float>(w) - textLeft - pad;
+            const float maxW =
+                static_cast<float>(w) - textLeft - pad - reserveR;
             ComPtr<IDWriteTextLayout> layout;
             g_dwFactory->CreateTextLayout(
                 item.title.c_str(),
@@ -1517,11 +1522,11 @@ void Popup::Render() {
                 // a fill) is the hover signal - it reads however DWM
                 // composites the preview.
                 //
-                // Per-card close: the circle floats in the reserved band
-                // ABOVE the preview slot - a live DWM thumbnail composites
-                // above everything, so the circle must sit outside the
-                // preview pixels and cards stay live with the buttons on.
-                const float slotTop = top + CardTopPad() * scale_;
+                // Per-card close: the button rides the title strip
+                // below the slot, flush right - a live DWM thumbnail
+                // composites above everything, so the X must sit outside
+                // the preview pixels (drawn with the strip, below).
+                const float slotTop = top + kCardPadY * scale_;
                 const float slotL = pad;
                 const float slotR = static_cast<float>(w) - pad;
                 const float slotB = slotTop + slotH;
@@ -1587,96 +1592,112 @@ void Popup::Render() {
                         }
                     }
                 }
-                // Per-card close circle in the band above the slot:
-                // a dark backing keeps the glyph readable on the panel;
-                // red on X-hover - the destructive signal.
-                if (settings_.cardCloseButtons) {
-                    const float cs = kCardXSz * scale_;
-                    const float cx0 = slotR - kCardXInset * scale_ - cs;
-                    const float cy0 =
-                        top + (CardTopPad() * scale_ - cs) / 2.0f;
-                    row.xCard = {
-                        static_cast<LONG>(cx0 - 2.0f * scale_),
-                        static_cast<LONG>(cy0 - 2.0f * scale_),
-                        static_cast<LONG>(cx0 + cs + 2.0f * scale_),
-                        static_cast<LONG>(cy0 + cs + 2.0f * scale_)};
-                    const bool xHot = static_cast<int>(r) == hoverCardX_;
-                    const float ccx = cx0 + cs / 2;
-                    const float ccy = cy0 + cs / 2;
-                    ComPtr<ID2D1SolidColorBrush> back;
-                    g_ctx->CreateSolidColorBrush(
-                        xHot
-                            ? D2D1::ColorF(kColRedR, kColRedG, kColRedB,
-                                           1.0f)
-                            : D2D1::ColorF(0x1E / 255.0f, 0x1B / 255.0f,
-                                           0x1B / 255.0f,
-                                           hot ? 0.8f : 0.62f),
-                        &back);
-                    if (back) {
-                        g_ctx->FillEllipse(
-                            D2D1::Ellipse(D2D1::Point2F(ccx, ccy), cs / 2,
-                                          cs / 2),
-                            back.Get());
+                if (strip) {
+                    const float sTop = slotB;
+                    const float sH = kThumbStripH * scale_;
+                    // The strip content centers in strip + bottom pad,
+                    // not the strip alone: kCardPadBottom is
+                    // panel-colored, so the eye counts it as space below
+                    // the row - strip-only centering reads top-heavy
+                    // (bottom gap looks bigger than the top one).
+                    const float opt = kCardPadBottom * scale_ / 2.0f;
+                    if (hot && g_hover) {
+                        g_ctx->FillRectangle(
+                            D2D1::RectF(0, sTop, static_cast<float>(w),
+                                        sTop + sH),
+                            g_hover.Get());
                     }
-                    if (!xHot) {
-                        ComPtr<ID2D1SolidColorBrush> ring;
-                        g_ctx->CreateSolidColorBrush(
-                            D2D1::ColorF(kColSoftR, kColSoftG, kColSoftB,
-                                         0.35f),
-                            &ring);
-                        if (ring) {
-                            g_ctx->DrawEllipse(
-                                D2D1::Ellipse(D2D1::Point2F(ccx, ccy),
-                                              cs / 2, cs / 2),
-                                ring.Get(), 1.0f);
+                    float textLeft = pad;
+                    if (settings_.showIcons && item.icon) {
+                        const float si = 20.0f * scale_;
+                        const float iy = sTop + (sH - si) / 2 + opt;
+                        ID2D1Bitmap* iconBmp =
+                            CardIconFor(item,
+                                        static_cast<UINT>(si + 0.5f));
+                        if (iconBmp) {
+                            g_ctx->DrawBitmap(
+                                iconBmp,
+                                D2D1::RectF(pad, iy, pad + si, iy + si));
                         }
+                        textLeft = pad + si + pad * 0.6f;
                     }
-                    ComPtr<ID2D1SolidColorBrush> xg;
-                    g_ctx->CreateSolidColorBrush(
-                        xHot ? D2D1::ColorF(1, 1, 1, 0.95f)
-                             : D2D1::ColorF(kColTextR, kColTextG, kColTextB,
-                                            0.92f),
-                        &xg);
-                    if (xg) {
-                        const float hs = 3.5f * scale_;
-                        g_ctx->DrawLine(
-                            D2D1::Point2F(ccx - hs, ccy - hs),
-                            D2D1::Point2F(ccx + hs, ccy + hs),
-                            xg.Get(), 1.6f * scale_, g_roundCap.Get());
-                        g_ctx->DrawLine(
-                            D2D1::Point2F(ccx - hs, ccy + hs),
-                            D2D1::Point2F(ccx + hs, ccy - hs),
-                            xg.Get(), 1.6f * scale_, g_roundCap.Get());
+                    // Per-card close button at the strip's far right,
+                    // in line with the icon and title: a rounded
+                    // square, like the native Win11 flyout close. The
+                    // title ellipsizes short of it; the button draws
+                    // after the text so its backing sits over any
+                    // hover fill. Red on X-hover - the destructive
+                    // signal.
+                    if (settings_.cardCloseButtons) {
+                        const float cs = kCardXSz * scale_;
+                        const float cx0 =
+                            static_cast<float>(w) - pad - cs;
+                        const float cy0 =
+                            sTop + (sH - cs) / 2.0f + opt;
+                        row.xCard = {
+                            static_cast<LONG>(cx0 - 2.0f * scale_),
+                            static_cast<LONG>(cy0 - 2.0f * scale_),
+                            static_cast<LONG>(cx0 + cs + 2.0f * scale_),
+                            static_cast<LONG>(cy0 + cs + 2.0f * scale_)};
+                        const bool xHot =
+                            static_cast<int>(r) == hoverCardX_;
+                        const float ccx = cx0 + cs / 2;
+                        const float ccy = cy0 + cs / 2;
+                        const float xr = kCardXR * scale_;
+                        const D2D1_ROUNDED_RECT xrr = D2D1::RoundedRect(
+                            D2D1::RectF(cx0, cy0, cx0 + cs, cy0 + cs),
+                            xr, xr);
+                        ComPtr<ID2D1SolidColorBrush> back;
+                        g_ctx->CreateSolidColorBrush(
+                            xHot
+                                ? D2D1::ColorF(kColRedR, kColRedG, kColRedB,
+                                               1.0f)
+                                : D2D1::ColorF(0x1E / 255.0f, 0x1B / 255.0f,
+                                               0x1B / 255.0f,
+                                               hot ? 0.8f : 0.62f),
+                            &back);
+                        if (back) {
+                            g_ctx->FillRoundedRectangle(xrr, back.Get());
+                        }
+                        if (!xHot) {
+                            ComPtr<ID2D1SolidColorBrush> ring;
+                            g_ctx->CreateSolidColorBrush(
+                                D2D1::ColorF(kColSoftR, kColSoftG,
+                                             kColSoftB, 0.35f),
+                                &ring);
+                            if (ring) {
+                                g_ctx->DrawRoundedRectangle(xrr,
+                                                            ring.Get(),
+                                                            1.0f);
+                            }
+                        }
+                        ComPtr<ID2D1SolidColorBrush> xg;
+                        g_ctx->CreateSolidColorBrush(
+                            xHot ? D2D1::ColorF(1, 1, 1, 0.95f)
+                                 : D2D1::ColorF(kColTextR, kColTextG,
+                                                kColTextB, 0.92f),
+                            &xg);
+                        if (xg) {
+                            const float hs = 4.5f * scale_;
+                            g_ctx->DrawLine(
+                                D2D1::Point2F(ccx - hs, ccy - hs),
+                                D2D1::Point2F(ccx + hs, ccy + hs),
+                                xg.Get(), 1.8f * scale_,
+                                g_roundCap.Get());
+                            g_ctx->DrawLine(
+                                D2D1::Point2F(ccx - hs, ccy + hs),
+                                D2D1::Point2F(ccx + hs, ccy - hs),
+                                xg.Get(), 1.8f * scale_,
+                                g_roundCap.Get());
+                        }
+                        drawTitle(item, textLeft, sTop + opt, sH, false,
+                                  cs + kCardXGap * scale_);
+                    } else {
+                        row.xCard = {};
+                        drawTitle(item, textLeft, sTop + opt, sH);
                     }
                 } else {
                     row.xCard = {};
-                }
-                if (strip) {
-                    {
-                        const float sTop = slotB;
-                        const float sH = kThumbStripH * scale_;
-                        if (hot && g_hover) {
-                            g_ctx->FillRectangle(
-                                D2D1::RectF(0, sTop, static_cast<float>(w),
-                                            sTop + sH),
-                                g_hover.Get());
-                        }
-                        float textLeft = pad;
-                        if (settings_.showIcons && item.icon) {
-                            const float si = 20.0f * scale_;
-                            const float iy = sTop + (sH - si) / 2;
-                            ID2D1Bitmap* iconBmp =
-                                CardIconFor(item,
-                                            static_cast<UINT>(si + 0.5f));
-                            if (iconBmp) {
-                                g_ctx->DrawBitmap(
-                                    iconBmp,
-                                    D2D1::RectF(pad, iy, pad + si, iy + si));
-                            }
-                            textLeft = pad + si + pad * 0.6f;
-                        }
-                        drawTitle(item, textLeft, sTop, sH);
-                    }
                 }
             } else {
                 // Classic icon+title row.
@@ -1770,7 +1791,7 @@ void Popup::Render() {
     // Drawn last so its fused bottom overlap sits over the panel edge.
     // Rest: panel-lifted fill + soft glyph and a faint border; hover: teal
     // accent fill + white glyph - the product's "this control is EdgePop"
-    // signal (the per-card circles go red instead, never teal).
+    // signal (the per-card close buttons go red instead, never teal).
     {
         const float xs = kXBtnSz * scale_;
         const float inset = kXInsetX * scale_;

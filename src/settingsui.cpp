@@ -193,13 +193,15 @@ const HelpEntry kHelp[] = {
       L"the hovered window visible on the desktop. Everything returns "
       L"the moment the hover moves off or the popup closes." },
     { IDC_QQ_CLOSEBTN,
-      L"A close X floating above each preview's corner.",
+      L"A close X at the far right of each card's title row.",
       L"Close buttons on cards\n\n"
-      L"Adds a small round X in a band above each preview's top-right "
-      L"corner - click it to close that window. Previews stay live with "
-      L"the buttons on or off: a live preview can never have a button "
-      L"painted on it, so the X sits just above it. The big square X "
-      L"above the list only ever closes the popup itself." },
+      L"Adds a small rounded-square X at the far right of each card's "
+      L"title row, "
+      L"in line with the icon and app name - click it to close that "
+      L"window. Previews stay live with the buttons on or off: a live "
+      L"preview can never have a button painted on it, so the X rides "
+      L"the title row outside the preview. The big square X above the "
+      L"list only ever closes the popup itself." },
     { IDC_QQ_VD,
       L"List windows from the current virtual desktop only, or all.",
       L"Virtual desktops\n\n"
