@@ -2706,6 +2706,38 @@ void Popup::Render() {
                 mapRect(row.rc, fs, shX0, scaledTop, top);
                 mapRect(row.thumbSlot, fs, shX0, scaledTop, top);
                 mapRect(row.xCard, fs, shX0, scaledTop, top);
+                // D-092 (Karl: "this area should be blank/transparent"):
+                // the panel area BESIDE a shrinking card is erased to
+                // alpha 0 - the desktop shows through, the popup surface
+                // ends with the card, macOS-dock style. Only the card
+                // area [0, cardR] - the rail strip keeps its panel so
+                // the capsule spine stays unbroken. Same MIN-blend
+                // erase the thumbnail holes use.
+                if (g_erase) {
+                    float ex0, ex1;
+                    if (animAnchorClient_.x > static_cast<int>(w) / 2) {
+                        ex0 = 0.0f;              // seam right: left gap
+                        ex1 = shX0;
+                    } else {
+                        ex0 = shX0 + cardR * fs; // seam left: right gap
+                        ex1 = cardR;
+                    }
+                    if (ex1 > ex0 + 0.5f) {
+                        // Clip + Clear, not MIN-blend: Clear writes
+                        // unconditionally (the MIN/alpha-0-brush erase
+                        // silently no-ops on this render stack - and the
+                        // thumbnail "holes" never proved it worked, DWM
+                        // thumbs composite above the swapchain anyway,
+                        // gotcha 18). The protrusion band proves alpha-0
+                        // regions of this window show the desktop.
+                        g_ctx->PushAxisAlignedClip(
+                            D2D1::RectF(ex0, scaledTop, ex1,
+                                        scaledTop + rh * fs),
+                            D2D1_ANTIALIAS_MODE_ALIASED);
+                        g_ctx->Clear(D2D1::ColorF(0, 0, 0, 0));
+                        g_ctx->PopAxisAlignedClip();
+                    }
+                }
             }
             top += rh;
         }
