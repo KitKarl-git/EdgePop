@@ -883,28 +883,11 @@ ComPtr<ID2D1Bitmap> CaptureSnapshotWGC(HWND src) {
     }
 }
 
-// Peek ghosting (see the block below): the moved-window set, declared
-// early because CaptureSnapshot must refuse windows parked off-screen.
-struct Ghosted {
-    HWND hwnd;
-    RECT rc;    // exact pre-move rect
-};
-std::vector<Ghosted> g_ghosted;
-
-bool IsGhosted(HWND hwnd) {
-    for (const auto& g : g_ghosted)
-        if (g.hwnd == hwnd) return true;
-    return false;
-}
-
 ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
-    // Peek ghosting (below) parks windows outside the virtual screen;
-    // their video/render content pauses (Chromium blanks video in
-    // off-screen windows), so both the screen read (off-monitor) and
-    // WGC (paused surface) would cache black video frames - the
-    // "still opens gray/black, live thumb snaps to color" poison.
-    // Keep the previous good entry instead (D-076).
-    if (IsGhosted(src)) return nullptr;
+    // Nothing is ever parked anymore (D-083: peek RAISES the hovered
+    // window instead of hiding its occluders), so every listed window
+    // is on screen and rendering while a popup can be up - captures
+    // read real frames by construction.
     RECT rc{};
     // Client area first (matches the live thumbnail's framing, see
     // ClientRectOnScreen); extended frame bounds only as a fallback
@@ -1018,14 +1001,17 @@ void CacheSnapshots(const std::vector<WindowItem>& items,
     PruneSnapshotCache();
 }
 
-// Show-path variant (D-075): capture only windows the cache doesn't
-// have yet, within a total time budget. A cold window (opened after
-// the startup warm-up, LRU-evicted, or failed once at warm-up)
-// otherwise flashes the gray placeholder + icon until its live
-// thumbnail registers - the "starts gray, snaps to color" complaint.
-// Runs before the popup is on screen, so screen captures can't embed
-// popup pixels. Warm caches pay nothing; a cold fire pays a few tens
-// of ms per missing window.
+// Show-path variant (D-075): capture windows the cache doesn't have a
+// USABLE entry for, within a total time budget. Unusable = missing, or
+// captured at a different window aspect (the window was resized since
+// - a drifted still letterboxes differently than the live thumbnail
+// will, and the still->live swap at registration visibly JUMPS, Karl's
+// hover-jump report; with D-83 nothing swaps mid-hover anymore, so this
+// open-time swap is the only one left - keep it seamless). A cold
+// window otherwise also flashes the placeholder for the whole
+// registration delay. Runs before the popup is on screen, so screen
+// captures can't embed popup pixels. Warm caches pay nothing; a cold or
+// drifted fire pays a few tens of ms per window.
 int CacheMissingSnapshots(const std::vector<WindowItem>& items,
                           ULONGLONG budgetMs) {
     if (!g_ctx) return 0;
@@ -1034,7 +1020,21 @@ int CacheMissingSnapshots(const std::vector<WindowItem>& items,
     for (const auto& it : items) {
         if (it.minimized || !it.hwnd || !IsWindow(it.hwnd)) continue;
         if (IsIconic(it.hwnd)) continue;   // no live surface to read
-        if (g_snapCache.count(it.hwnd)) continue;
+        auto sn = g_snapCache.find(it.hwnd);
+        if (sn != g_snapCache.end() && sn->second.bmp) {
+            RECT crc{};
+            if (ClientRectOnScreen(it.hwnd, crc) && crc.right > crc.left) {
+                const D2D1_SIZE_F sz = sn->second.bmp->GetSize();
+                const double wantA = static_cast<double>(crc.right - crc.left) /
+                                     (crc.bottom - crc.top);
+                const double haveA = sz.width / sz.height;
+                const double drift = std::abs(wantA - haveA) /
+                                     (wantA > haveA ? wantA : haveA);
+                if (drift <= 0.02) continue;   // fresh framing - keep it
+            } else {
+                continue;   // no client rect to judge - keep the entry
+            }
+        }
         ++missing;
         ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(it.hwnd);
         if (bmp) {
@@ -1048,150 +1048,100 @@ int CacheMissingSnapshots(const std::vector<WindowItem>& items,
     }
     PruneSnapshotCache();
     if (missing)
-        PLog(L"snapshot: show-time %d/%d missing captured (%llu ms)",
+        PLog(L"snapshot: show-time %d/%d missing-or-drifted captured "
+             L"(%llu ms)",
              captured, missing, GetTickCount64() - start);
     return captured;
 }
 
-// --- peek-on-hover ghosting ------------------------------------
+// --- peek-on-hover reveal: RAISE, never hide (D-083) ---------------
 //
-// Taskbar-preview behavior: while an entry is hovered, the windows that
-// OCCLUDE it are hidden, leaving the hovered window revealed on the
-// desktop. D-079 narrows the set to occluders only (z-above AND
-// overlapping): windows below or beside the hovered one never covered
-// the peek, and parking them off-screen buys nothing but disturbance -
-// a video playing elsewhere on the monitor would go dark on the desktop
-// AND blank in its live card (Chromium pauses video in off-screen
-// windows - at ANY on-screen sliver, probed to 256 px, D-080). D-081:
-// Chromium-family windows are excluded from parking ENTIRELY - see the
-// skip in the loop.
-// Hiding = moving the window fully outside
-// the virtual screen, then restoring its exact rect afterwards - the only
-// cross-process hide that provably cannot damage a foreign renderer:
-// the app keeps rendering (the swapchain never notices a position
-// change), its DWM thumbnail stays alive and the taskbar button stays.
-// Every alternative maims or is denied (D-068 probes): toggling
-// WS_EX_LAYERED on a non-layered window kills flip-model D3D swapchains
-// for good; SetLayeredWindowAttributes on a NATIVELY layered window
-// (Qt translucent chrome - Windscribe) hijacks it out of its
-// UpdateLayeredWindow mode and it never draws again; DWMWA_CLOAK is
-// owner/shell-only (E_ACCESSDENIED from outside); SW_HIDE drops the
-// taskbar buttons. Apps that veto the move (WM_WINDOWPOSCHANGING) are
-// skipped - peek degrades to leaving them visible.
+// The ground-up redesign after the freeze/black/gray/peek-broken chain.
+// Every cross-process HIDE degrades something: parking a window fully
+// off-screen pauses Chromium-family renderers (probed at any on-screen
+// sliver, D-080) - the video card froze or went black; sparing the
+// browsers (D-081) then broke the reveal for windows buried under one
+// ("peek functionality has been broken"); and every still<->live swap
+// mid-hover read as a freeze, a wash (the alpha bug, D-082) or a jump
+// (framing drift). The reveal that hides NOTHING: raise the hovered
+// window above its occluders - z-order only, SWP_NOACTIVATE, no move,
+// no focus change, no taskbar churn. The window is revealed on the
+// desktop, the occluders stay put: a PARTIALLY covered browser keeps
+// rendering, so the video keeps playing in the flesh and in its live
+// card, and every card stays a live thumbnail for the whole popup.
+// Windows' own taskbar preview hides the others with the shell-only
+// DWM cloak (E_ACCESSDENIED for everyone else, D-068 probe); raising is
+// the closest a third-party app gets without breaking rendering.
+//
+// Restore: the window drops back to its recorded z-slot when the hover
+// moves on or the popup closes. Known edges, accepted and logged: a
+// raised window that FULLY covers a Chromium window still pauses that
+// one (it must be the LARGER window - rare); raising above the
+// FOREGROUND window is refused by the OS, so a peek under Karl's
+// current window reveals just below it (same class as the old fg
+// guard); the CLICKED window keeps its raised spot - demoting the
+// window the user just chose would be absurd.
 
-void UnghostAll(std::vector<HWND>* restored = nullptr) {
-    for (const auto& g : g_ghosted) {
-        if (IsWindow(g.hwnd)) {
-            SetWindowPos(g.hwnd, nullptr, g.rc.left, g.rc.top, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-            if (restored) restored->push_back(g.hwnd);
-        }
-    }
-    g_ghosted.clear();
+struct RaisedWin {
+    HWND hwnd = nullptr;            // the raised window (one at a time)
+    HWND belowNeighbor = nullptr;   // its z-lower neighbor at raise time
+};
+RaisedWin g_raised;
+
+// restoreZ=false: the click-to-switch path - the window was CHOSEN, it
+// keeps the top spot; only forget the record.
+void RestoreRaised(bool restoreZ = true) {
+    if (!g_raised.hwnd) return;
+    const HWND h = g_raised.hwnd;
+    const HWND below = g_raised.belowNeighbor;
+    g_raised = RaisedWin{};
+    if (!restoreZ || !IsWindow(h)) return;
+    if (!IsWindow(below)) return;   // neighbor died: leave it raised
+    // Put h directly ABOVE `below`: hWndInsertAfter places the window
+    // BELOW that handle (gotcha 25), so anchor on the window that is
+    // directly above below at restore time.
+    HWND anchor = GetWindow(below, GW_HWNDPREV);
+    SetWindowPos(h, anchor ? anchor : HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
 }
 
-void GhostAllBut(HWND keep, VirtualDesktops vd) {
-    std::vector<HWND> restored;
-    UnghostAll(&restored);
-    auto wasRestored = [restored](HWND h) {
-        for (HWND r : restored)
-            if (r == h) return true;
-        return false;
-    };
-    if (!keep || !IsWindow(keep)) return;
+void RevealRaise(HWND keep, VirtualDesktops vd) {
+    RestoreRaised();
+    if (!keep || !IsWindow(keep) || IsIconic(keep)) return;
     HMONITOR mon = MonitorFromWindow(keep, MONITOR_DEFAULTTONEAREST);
     if (!mon) return;
     const auto others = EnumerateWindowsOnMonitor(mon, vd);
-    PLog(L"peek: %d window(s) on the hovered monitor, keeping hwnd=0x%p",
-         static_cast<int>(others.size()), keep);
-    // Never ghost the FOREGROUND window: moving the window the user is
-    // in out of the virtual screen and back makes focus-recovery apps
-    // (WeChat repro) re-assert themselves the moment a popup click
-    // takes the foreground away - the switch bounces back within
-    // ~100 ms. It stays visible instead, so peek degrades only when
-    // the window being left covers the hovered one.
-    const HWND fg = GetForegroundWindow();
-    const int vsL = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    // Occluders only (D-079): the enumeration is topmost-first, so
-    // everything seen before `keep` sits ABOVE it; ghost such a window
-    // only when its rect overlaps the hovered window's. A MINIMIZED
-    // hovered window has no on-screen rect to test against - fall back
-    // to hiding all (the revealed desktop shows where it will restore).
+    // Occluders (for the log and the "already visible" short-circuit):
+    // z-above AND overlapping - the enumeration is topmost-first, so
+    // everything seen before `keep` sits above it.
     RECT keepRc{};
-    const bool occludersOnly =
-        !IsIconic(keep) && GetWindowRect(keep, &keepRc) &&
-        keepRc.right > keepRc.left && keepRc.bottom > keepRc.top;
-    int ghosts = 0;
-    int chromiumSkips = 0;
+    const bool haveKeep =
+        GetWindowRect(keep, &keepRc) && keepRc.right > keepRc.left;
+    int occluders = 0;
     bool seenKeep = false;
     for (const auto& w : others) {
-        if (w.hwnd == keep) {
-            seenKeep = true;
-            continue;
-        }
-        if (w.hwnd == fg || w.minimized || !IsWindow(w.hwnd))
-            continue;
-        // Chromium-family windows (Chrome/Edge/Brave/Electron - the
-        // window class is the giveaway, no process sniffing) are NEVER
-        // parked (D-081): their renderers pause for hidden/off-screen
-        // windows at ANY on-screen sliver (probed, D-080), so parking
-        // one freezes its card AND yanks a playing video off the
-        // desktop. They stay up and keep playing in their live card;
-        // peek degrades only for windows they cover - those keep their
-        // live card previews, which show the same content anyway.
-        wchar_t cls[64];
-        if (GetClassNameW(w.hwnd, cls, 64) > 0 &&
-            wcscmp(cls, L"Chrome_WidgetWin_1") == 0) {
-            ++chromiumSkips;
-            continue;
-        }
+        if (w.hwnd == keep) { seenKeep = true; continue; }
+        if (w.minimized || !IsWindow(w.hwnd)) continue;
+        if (!haveKeep || !seenKeep) continue;
         RECT rc{};
         if (!GetWindowRect(w.hwnd, &rc)) continue;
-        if (occludersOnly) {
-            if (seenKeep) continue;   // below the hovered window
-            const RECT inter{ std::max(rc.left, keepRc.left),
-                              std::max(rc.top, keepRc.top),
-                              std::min(rc.right, keepRc.right),
-                              std::min(rc.bottom, keepRc.bottom) };
-            if (inter.right <= inter.left || inter.bottom <= inter.top)
-                continue;   // beside it - never covered the peek
-        }
-        const int width = rc.right - rc.left;
-        // Fresh frame while the window is STILL on screen: the still
-        // feeds the next popup's pop-in gap (and minimized cards), and
-        // a stale one reads as the "gray overlay" complaint (D-077).
-        // Capture-time gate - hopping between cards must not re-capture
-        // the same windows every hop - and NEVER for a window this very
-        // call just restored: Chromium's video is still blank for a few
-        // hundred ms after restore, so that capture would cache a
-        // black video frame over a card that was just playing (the
-        // "video disappearing is back" repro, D-078).
-        const ULONGLONG nowTick = GetTickCount64();
-        auto sn = g_snapCache.find(w.hwnd);
-        if (g_ctx && !wasRestored(w.hwnd) &&
-            (sn == g_snapCache.end() ||
-             nowTick - sn->second.captured > 2000)) {
-            ComPtr<ID2D1Bitmap> fresh = CaptureSnapshot(w.hwnd);
-            if (fresh) {
-                g_snapCache[w.hwnd] =
-                    SnapEntry{ std::move(fresh), nowTick, nowTick };
-            }
-        }
-        // Fully left of the virtual screen, unchanged top: same monitor
-        // order, minimal surprise on restore. (A visible sliver does NOT
-        // keep Chromium-family renderers alive - probed with an animated
-        // Edge window at 4..256 px on-screen: paused at every size, so
-        // ghosted cards freeze onto their fresh pre-peek stills instead,
-        // see RetireGhostedThumbnails; D-080.)
-        if (SetWindowPos(w.hwnd, nullptr, vsL - width - 64, rc.top, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)) {
-            g_ghosted.push_back({ w.hwnd, rc });
-            ++ghosts;
-        }
+        const RECT inter{ std::max(rc.left, keepRc.left),
+                          std::max(rc.top, keepRc.top),
+                          std::min(rc.right, keepRc.right),
+                          std::min(rc.bottom, keepRc.bottom) };
+        if (inter.right > inter.left && inter.bottom > inter.top)
+            ++occluders;
     }
-    PLog(L"peek: %d occluder(s) of hwnd=0x%p hidden, %d chromium "
-         L"window(s) left on screen",
-         ghosts, keep, chromiumSkips);
+    if (occluders == 0) return;   // nothing to reveal it from
+    g_raised = { keep, GetWindow(keep, GW_HWNDNEXT) };
+    if (SetWindowPos(keep, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)) {
+        PLog(L"peek: raise hwnd=0x%p above %d occluder(s)",
+             keep, occluders);
+    } else {
+        g_raised = RaisedWin{};
+        PLog(L"peek: raise hwnd=0x%p refused", keep);
+    }
 }
 
 // --- over-mode labels -------------------
@@ -1413,7 +1363,7 @@ void Popup::Show(const Segment& segment, const MonitorRect& main,
                  const std::vector<PopupSection>& sections, POINT cursor,
                  const Settings& s) {
     if (!hwnd_) return;
-    UnghostAll();               // never inherit ghosts from a prior show
+    RestoreRaised();            // never inherit a raise from a prior show
     UnregisterThumbnails();   // stale rects/handles; re-registered per show
     segment_ = segment;
     main_ = main;
@@ -1606,14 +1556,10 @@ void Popup::Hide(bool capture) {
     if (!hwnd_) return;
     KillTimer(hwnd_, kPollTimer);
     KillTimer(hwnd_, kVerifyFgTimer);
-    // Restore first, remember WHO was ghosted: a just-restored window's
-    // renderer hasn't caught up yet (Chromium blanks video in off-screen
-    // windows and needs frames to repaint after restore), so re-capturing
-    // it now would cache a black-video frame - the still then opens
-    // gray/black until the live thumbnail replaces it. Just-restored
-    // windows keep their pre-peek snapshot (D-076).
-    std::vector<HWND> restored;
-    UnghostAll(&restored);
+    // Drop the peek-raise (the CLICKED window already kept its top spot
+    // - ActivateItem releases the record without restoring; closing the
+    // popup returns every other raised window to its z-slot).
+    RestoreRaised();
     UnregisterThumbnails();   // plan: previews live only while visible
     // Snap the visual to rest (also cancels a running animation) so the
     // next Show starts from a clean state.
@@ -1626,7 +1572,7 @@ void Popup::Hide(bool capture) {
     ShowWindow(hwnd_, SW_HIDE);
     visible_ = false;
     hoverRow_ = -1;
-    // Snapshots now read the composed screen, so let the DWM drop this
+    // Snapshots read the composed screen, so let the DWM drop this
     // popup's pixels first - chain mode can list windows that sit under
     // it, and a capture racing the hide would embed popup pixels.
     // capture=false: the caller (the click-to-switch path) is in a
@@ -1634,7 +1580,7 @@ void Popup::Hide(bool capture) {
     // is still ours - and defers the settle+capture to its verify tick.
     if (capture && settings_.thumbnails && !items_.empty()) {
         Sleep(32);
-        CacheSnapshots(items_, &restored);
+        CacheSnapshots(items_);
     }
 }
 
@@ -1859,28 +1805,21 @@ int Popup::ItemFromPoint(POINT pt) const {
 void Popup::UpdateHover(int row) {
     if (row == hoverRow_) return;
     hoverRow_ = row;
-    if (settings_.peek) UpdateHoverGhosting();
+    if (settings_.peek) UpdateHoverReveal();
     Render();
 }
 
-// Peek-on-hover: the hovered entry's window stays visible and its
-// OCCLUDERS hide until the hover moves on; their cards freeze on fresh
-// pre-peek stills (the renderer pauses off-screen), every other card
-// stays live (D-079/D-080).
-void Popup::UpdateHoverGhosting() {
+// Peek-on-hover (D-083): raise the hovered entry's window above its
+// occluders; drop it back when the hover moves on. Thumbnails are never
+// touched here - every card stays live for the whole popup.
+void Popup::UpdateHoverReveal() {
     if (hoverRow_ >= 0 && hoverRow_ < static_cast<int>(rows_.size()) &&
         !rows_[hoverRow_].isHeader && rows_[hoverRow_].item >= 0) {
-        GhostAllBut(items_[rows_[hoverRow_].item].hwnd,
+        RevealRaise(items_[rows_[hoverRow_].item].hwnd,
                     settings_.virtualDesktops);
     } else {
-        UnghostAll();
+        RestoreRaised();
     }
-    RetireGhostedThumbnails();
-    // Re-register only once the pop-in has settled: DWM thumbnails
-    // ignore the DComp scale animation and would composite FULL-SIZE
-    // over the still-animating panel (Karl's slow-mo video, D-077).
-    // While thumbsPending_, the poll timer owns the first registration.
-    if (!thumbsPending_) RegisterThumbnails();
 }
 
 void Popup::UpdateHoverX(bool over) {
@@ -1921,6 +1860,10 @@ void Popup::ActivateItem(int item) {
     // silently refused. Hide() runs right after, its slow capture
     // deferred to the verify tick.
     UnregisterThumbnails();   // previews die with the popup either way
+    // The CLICKED window keeps its peek-raised top spot - releasing the
+    // raise record WITHOUT restoring z (Hide's RestoreRaised would
+    // demote the window the user just chose back under its occluders).
+    if (g_raised.hwnd == target) RestoreRaised(false);
     if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
     // Leaving a KNOWN re-asserter: any soft switch will land, bounce
     // within ~100 ms and force anyway - skip that juggling and force
@@ -2117,13 +2060,9 @@ void Popup::RegisterThumbnails() {
             continue;   // DWM renders minimized sources blank;
                         // the snapshot card carries it
         }
-        if (IsGhosted(it.hwnd)) {
-            continue;   // peek parked it off-screen: Chromium-family
-                        // renderers pause there (any sliver, probed
-                        // D-080), so the card shows the fresh pre-peek
-                        // still instead - frozen real frame, never
-                        // black; non-ghosted cards stay live (D-079)
-        }
+        // Peek never touches thumbnails anymore (D-083: the reveal
+        // raises the hovered window; nothing is parked, nothing pauses)
+        // - a registered card stays live for the whole popup.
 
         HTHUMBNAIL th = nullptr;
         HRESULT hr = DwmRegisterThumbnail(hwnd_, it.hwnd, &th);
@@ -2174,39 +2113,6 @@ void Popup::UnregisterThumbnails() {
     thumbs_.clear();
     for (auto& row : rows_) row.thumbLive = false;
     thumbsPending_ = false;
-}
-
-// Peek transition: retire the live thumbnails of just-ghosted windows
-// so their cards fall back to their fresh pre-peek still (captured in
-// GhostAllBut a moment earlier, client-cropped since D-078 - the frame
-// the live thumb showed at freeze time, so the swap is seamless). A
-// parked Chromium-family window STOPS RENDERING - probed (D-080): an
-// animated Edge window parked with up to 256 px still on-screen is
-// paused at every sliver size, and its live thumb goes frozen-or-black
-// (video blanks). The frozen REAL frame beats that; non-hovered cards
-// of windows that were never ghosted stay fully live (D-079).
-void Popup::RetireGhostedThumbnails() {
-    if (thumbs_.empty()) return;
-    bool any = false;
-    for (auto it = thumbs_.begin(); it != thumbs_.end(); ) {
-        if (IsGhosted(it->first)) {
-            if (it->second) DwmUnregisterThumbnail(it->second);
-            it = thumbs_.erase(it);
-            any = true;
-        } else {
-            ++it;
-        }
-    }
-    if (!any) return;
-    for (auto& row : rows_) {
-        if (!row.thumbLive) continue;
-        const int idx = row.item;
-        if (idx >= 0 && idx < static_cast<int>(items_.size()) &&
-            IsGhosted(items_[idx].hwnd)) {
-            row.thumbLive = false;
-        }
-    }
-    Render();   // redraw the stills into the retired slots
 }
 
 void Popup::ApplyAnimStart() {
@@ -2474,17 +2380,23 @@ void Popup::Render() {
                         sn->second.used = GetTickCount64();   // LRU heat
                         const D2D1_SIZE_F sz = sn->second.bmp->GetSize();
                         if (sz.width > 0 && sz.height > 0) {
+                            // Same letterbox math as RegisterThumbnails
+                            // (LONG rounding, integer centering) so the
+                            // still->live swap does not shift a pixel.
+                            const LONG sw2 =
+                                static_cast<LONG>(slotR - slotL);
+                            const LONG sh2 =
+                                static_cast<LONG>(slotB - slotTop);
                             const double k =
-                                std::min((slotR - slotL) / sz.width,
-                                         (slotB - slotTop) / sz.height);
-                            const float dw =
-                                static_cast<float>(sz.width * k);
-                            const float dh =
-                                static_cast<float>(sz.height * k);
+                                std::min(sw2 / sz.width, sh2 / sz.height);
+                            const LONG dw = static_cast<LONG>(
+                                sz.width * k + 0.5);
+                            const LONG dh = static_cast<LONG>(
+                                sz.height * k + 0.5);
                             const float dx =
-                                slotL + (slotR - slotL - dw) / 2;
+                                static_cast<float>(slotL + (sw2 - dw) / 2);
                             const float dy =
-                                slotTop + (slotB - slotTop - dh) / 2;
+                                static_cast<float>(slotTop + (sh2 - dh) / 2);
                             g_ctx->DrawBitmap(
                                 sn->second.bmp.Get(),
                                 D2D1::RectF(dx, dy, dx + dw, dy + dh));

@@ -33,13 +33,16 @@
 // the title ellipsizes short of it. Clicking it WM_CLOSEs that window
 // and the popup rebuilds in place.
 //
-// Peek-on-hover hides the hovered window's occluders (D-079) EXCEPT
-// Chromium-family windows (class Chrome_WidgetWin_1) - never parked
-// (D-081): their renderers pause off-screen at any sliver (probed to
-// 256 px, D-080), so parking one would freeze its card and yank a
-// playing video off the desktop. Browser windows stay up and keep
-// playing in their live cards; a parked non-Chromium occluder freezes
-// its card on its fresh pre-peek still.
+// Peek-on-hover (D-083) reveals by RAISING the hovered window above
+// its occluders (z-only, no activation) and restoring its z-slot when
+// the hover moves on - nothing is ever hidden or parked, so nothing
+// pauses and every card stays a live thumbnail for the whole popup
+// (Windows' own preview hides the others with the shell-only DWM
+// cloak; raising is the third-party equivalent that breaks nothing).
+// Still snapshots exist only for the pop-in gap and minimized cards;
+// they are alpha-opaque (D-082) and recaptured when the window's
+// aspect drifted (D-083), so the one still->live swap at open is
+// seamless.
 #pragma once
 
 #include <windows.h>
@@ -156,8 +159,7 @@ private:
     void StartAnimation();          // compositor-driven pop-out
     void RegisterThumbnails();      // live previews, after the pop-in settles
     void UnregisterThumbnails();
-    void RetireGhostedThumbnails(); // peek: ghosted cards freeze on fresh stills
-    void UpdateHoverGhosting();     // peek-on-hover: hide the occluders
+    void UpdateHoverReveal();       // peek-on-hover: raise the hovered window
     void VerifyForeground();        // deferred switch check
 
     HWND hwnd_ = nullptr;
