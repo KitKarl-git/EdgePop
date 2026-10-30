@@ -100,7 +100,15 @@ constexpr float kCardWMax = 400.0f;      // ceiling - 480 read too wide on
                                          // my desk; 400 keeps headroom
                                          // over the 300 default
 constexpr float kThumbStripH = 26.0f;
-constexpr float kCardPadY = 8.0f;        // above the title strip
+constexpr float kCardPadY = 0.0f;        // above the title strip: 0 - the
+                                         // strip sits flush under the card's
+                                         // top edge (the hovered card's teal
+                                         // border). The old 8 px of panel
+                                         // between the two read as the
+                                         // "gray bar under the teal" through
+                                         // twelve rounds; every other band
+                                         // (letterbox, clamp, fill) was on
+                                         // the wrong side of that line.
 constexpr float kCardPadBottom = 3.0f;   // under the preview slot; 8+8
                                          // between cards read as dead
                                          // space after the last row
