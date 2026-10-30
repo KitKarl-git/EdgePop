@@ -778,11 +778,25 @@ void TerminateOtherEdgePops() {
 // its popup card keeps the last-known content - taskbar behavior. The
 // hook is out-of-context: the callback arrives on this thread via the
 // message loop in wWinMain.
+//
+// A second hook does the same on every foreground CHANGE: a window the
+// user just switched to is definitionally visible on screen, so that is
+// the one guaranteed-correct moment to cache it. Close-time captures
+// alone left windows that live buried under a maximized window (Karl's
+// video monitor) with NO snapshot at all - the D-070 occlusion gate
+// correctly refuses to cache their occluder's pixels, so those cards
+// fell back to the icon placeholder for the pop-in gap.
 HWINEVENTHOOK g_minHook = nullptr;
+HWINEVENTHOOK g_fgHook = nullptr;
 
-VOID CALLBACK OnMinimizeEvent(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG,
+VOID CALLBACK OnSnapshotEvent(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG,
                               LONG, DWORD, DWORD) {
-    if (event == EVENT_SYSTEM_MINIMIZESTART && hwnd) {
+    if (!hwnd) return;
+    if (event == EVENT_SYSTEM_MINIMIZESTART ||
+        event == EVENT_SYSTEM_FOREGROUND) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid == GetCurrentProcessId()) return;   // settings/splash/own UI
         edgepop::CacheWindowSnapshot(hwnd);
     }
 }
@@ -910,9 +924,15 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE,
     }
     g_minHook = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,
                                 EVENT_SYSTEM_MINIMIZESTART, nullptr,
-                                OnMinimizeEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
+                                OnSnapshotEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
     if (!g_minHook) {
         Log(L"WARNING: minimize-snapshot hook failed");
+    }
+    g_fgHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND,
+                               EVENT_SYSTEM_FOREGROUND, nullptr,
+                               OnSnapshotEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
+    if (!g_fgHook) {
+        Log(L"WARNING: foreground-snapshot hook failed");
     }
     Log(L"EdgePop started (" __DATE__ " " __TIME__ L")");
 
@@ -925,6 +945,7 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE,
         DispatchMessageW(&msg);
     }
     if (g_minHook) UnhookWinEvent(g_minHook);
+    if (g_fgHook) UnhookWinEvent(g_fgHook);
     CoUninitialize();
     return 0;
 }

@@ -364,15 +364,20 @@ ID2D1Bitmap* CardIconFor(const WindowItem& item, UINT size) {
 // --- last-known static previews --------------------------------
 //
 // DWM live thumbnails cannot ride the pop-in animation, so a fresh show
-// waits ~240 ms before the preview appears. To close that gap, every popup
-// close captures a static snapshot of each listed window by reading the
-// COMPOSED SCREEN over the window's visible bounds - no message ever
-// enters the foreign window (PrintWindow + PW_RENDERFULLCONTENT used to
-// live here and permanently froze custom-chrome apps that must service
-// its synchronous render request on their UI thread - Windscribe was the
-// repro; gotcha 27). The next show draws the snapshot instantly - it is
-// swapchain content, so it animates with the card - and the live
-// thumbnail seamlessly replaces it.
+// waits ~240 ms before the preview appears. To close that gap, snapshots
+// are captured by reading the COMPOSED SCREEN over the window's visible
+// bounds - no message ever enters the foreign window (PrintWindow +
+// PW_RENDERFULLCONTENT used to live here and permanently froze
+// custom-chrome apps that must service its synchronous render request on
+// their UI thread - Windscribe was the repro; gotcha 27). The next show
+// draws the snapshot instantly - it is swapchain content, so it animates
+// with the card - and the live thumbnail seamlessly replaces it.
+//
+// Capture sources (main.cpp wires the hooks): popup close, window
+// minimize-start, and every foreground CHANGE - the last one is what
+// keeps windows that live buried under a maximized window cached: close
+// time alone finds them occluded (the gate below refuses the occluder's
+// pixels, D-070) and they would forever show the icon placeholder.
 std::map<HWND, ComPtr<ID2D1Bitmap>> g_snapCache;
 
 ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
@@ -472,6 +477,10 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
         }
     }
     DeleteObject(dib);
+    if (bmp) {
+        PLog(L"snapshot: cache hwnd=0x%p (%d%% visible)", src,
+             probes ? hits * 100 / probes : 100);
+    }
     return bmp;
 }
 
@@ -577,11 +586,11 @@ float MeasureText(const std::wstring& text, IDWriteTextFormat* fmt) {
 
 } // namespace
 
-// Last-chance capture for windows as they minimize: the
-// taskbar keeps a snapshot of a window when it goes down; we do the same
-// via a global EVENT_SYSTEM_MINIMIZESTART hook (main.cpp installs it) so
-// the popup's snapshot cache has the content even if no popup closed
-// while the window was visible.
+// Snapshot capture for single windows out of WinEvent hooks
+// (minimize-start and foreground-change - see main.cpp): the taskbar
+// keeps a snapshot of a window when it goes down or loses the screen;
+// we do the same so the popup's snapshot cache has the content even if
+// no popup closed while the window was visible.
 void CacheWindowSnapshot(HWND hwnd) {
     if (!g_ctx || !hwnd || !IsWindow(hwnd)) return;
     // If the minimize already completed by the time this out-of-context
