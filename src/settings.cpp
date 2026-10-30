@@ -148,7 +148,7 @@ Settings LoadSettings(const wchar_t* ini) {
     if (s.cardWidth < 230) s.cardWidth = 230;
     if (s.cardWidth > 400) s.cardWidth = 400;
     s.cardMaxHeight =
-        GetPrivateProfileIntW(L"popup", L"card_max_height", 320, ini);
+        GetPrivateProfileIntW(L"popup", L"card_max_height", 200, ini);
     if (s.cardMaxHeight < 120) s.cardMaxHeight = 120;
     if (s.cardMaxHeight > 400) s.cardMaxHeight = 400;
 

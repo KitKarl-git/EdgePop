@@ -250,8 +250,8 @@ int main() {
     Check("missing keys: maxWidth defaults 420", t.maxWidth == 420);
     Check("missing keys: cardWidth defaults 300",
           t.cardWidth == 300);
-    Check("missing keys: cardMaxHeight defaults 320",
-          t.cardMaxHeight == 320);
+    Check("missing keys: cardMaxHeight defaults 200",
+          t.cardMaxHeight == 200);
     Check("missing keys: peek defaults true", t.peek == true);
     Check("missing keys: cardCloseButtons defaults true",
           t.cardCloseButtons == true);

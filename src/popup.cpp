@@ -2357,6 +2357,39 @@ void Popup::Render() {
                         static_cast<float>(h)),
             D2D1_ANTIALIAS_MODE_ALIASED);
         float top = protrude - scrollOff_;
+        // Edge shrink (D-088): a row crossing the viewport's top or
+        // bottom scales down as a WHOLE - strip, preview, frame
+        // together, anchored at the edge it is disappearing into. The
+        // old behavior clipped the strip at the viewport line while the
+        // thumbnail re-letterboxed ever smaller inside the visible slot
+        // sliver - two different shrink rates on one card. The scale is
+        // uniform so an aspect-true preview keeps its shape; hit rects
+        // and the thumbnail dest follow the scaled geometry.
+        const float vBotF = static_cast<float>(h);
+        auto beginRowScale = [&](float rowTop, float rowH, float& fs,
+                                 float& shX0, float& scaledTop) {
+            fs = 1.0f;
+            scaledTop = rowTop;
+            if (rowTop < protrude) {
+                fs = (rowTop + rowH - protrude) / rowH;
+                scaledTop = protrude;
+            } else if (rowTop + rowH > vBotF) {
+                fs = (vBotF - rowTop) / rowH;
+                scaledTop = vBotF - rowH * fs;
+            }
+            if (fs < 0.0f) fs = 0.0f;
+            if (fs > 1.0f) fs = 1.0f;
+            shX0 = (static_cast<float>(w) * (1.0f - fs)) / 2.0f;
+            return fs > 0.02f;   // false: fully out of view, skip row
+        };
+        auto mapRect = [&](RECT& rc, float fs, float shX0, float scaledTop,
+                           float rowTop) {
+            if (fs >= 1.0f) return;
+            rc = { static_cast<LONG>(shX0 + rc.left * fs),
+                   static_cast<LONG>(scaledTop + (rc.top - rowTop) * fs),
+                   static_cast<LONG>(shX0 + rc.right * fs),
+                   static_cast<LONG>(scaledTop + (rc.bottom - rowTop) * fs) };
+        };
         for (size_t r = 0; r < rows_.size(); ++r) {
             RowInfo& row = rows_[r];
             const float rh =
@@ -2370,6 +2403,22 @@ void Popup::Render() {
                            : rowH);
             row.rc = { 0, static_cast<LONG>(top), static_cast<LONG>(w),
                        static_cast<LONG>(top + rh) };
+            float fs = 1.0f, shX0 = 0.0f, scaledTop = top;
+            if (!beginRowScale(top, rh, fs, shX0, scaledTop)) {
+                top += rh;
+                continue;
+            }
+            if (fs != 1.0f) {
+                // full-size coords land at (cx0 + f*x, scaledTop +
+                // f*(y - top)); the row keeps drawing at its layout
+                // coordinates.
+                D2D1_MATRIX_3X2_F mx{};
+                mx._11 = fs;
+                mx._22 = fs;
+                mx._31 = shX0;
+                mx._32 = scaledTop - top * fs;
+                g_ctx->SetTransform(mx);
+            }
 
             if (row.isHeader) {
                 if (g_headerFmt && g_dim) {
@@ -2381,6 +2430,10 @@ void Popup::Render() {
                                                  top + headerH),
                                      g_header ? g_header.Get()
                                               : g_dim.Get());
+                }
+                if (fs != 1.0f) {
+                    g_ctx->SetTransform(D2D1_MATRIX_3X2_F{ 1, 0, 0, 1, 0, 0 });
+                    mapRect(row.rc, fs, shX0, scaledTop, top);
                 }
                 top += rh;
                 continue;
@@ -2598,6 +2651,12 @@ void Popup::Render() {
                     }
                 }
                 drawTitle(item, pad + iconSz + pad, top, rowH);
+            }
+            if (fs != 1.0f) {
+                g_ctx->SetTransform(D2D1_MATRIX_3X2_F{ 1, 0, 0, 1, 0, 0 });
+                mapRect(row.rc, fs, shX0, scaledTop, top);
+                mapRect(row.thumbSlot, fs, shX0, scaledTop, top);
+                mapRect(row.xCard, fs, shX0, scaledTop, top);
             }
             top += rh;
         }
