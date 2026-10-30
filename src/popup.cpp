@@ -310,13 +310,33 @@ ComPtr<ID2D1Bitmap> IconToBitmap(ID2D1DeviceContext* ctx, HICON icon,
     // apps (WhatsApp.Root.exe) ship no icon in the exe, and the shell's
     // jumbo list hands back a blank/generic frame for them - "succeeding"
     // here would strand the card with no visible icon while the window's
-    // own (smaller) WM_GETICON answer never gets tried (D-074).
-    bool anyPixel = false;
+    // own (smaller) WM_GETICON answer never gets tried (D-074). A uniform
+    // color sheet is the same disease (D-076: one renderer answered
+    // WM_GETICON with a 100%-opaque near-black square that read as "no
+    // icon" on the dark strip).
+    bool anyPixel = false, allOpaque = true;
+    int minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
     const DWORD* px = static_cast<const DWORD*>(bits);
     for (UINT i = 0; i < size * size; ++i) {
-        if (px[i] != 0) { anyPixel = true; break; }
+        const DWORD p = px[i];
+        if (p != 0) anyPixel = true;
+        const BYTE a = static_cast<BYTE>(p >> 24);
+        if (a < 250) allOpaque = false;
+        const BYTE r = static_cast<BYTE>(p >> 16);
+        const BYTE g = static_cast<BYTE>(p >> 8);
+        const BYTE b = static_cast<BYTE>(p);
+        if (a > 16) {   // judge color spread over visible pixels only
+            if (r < minR) minR = r;
+            if (r > maxR) maxR = r;
+            if (g < minG) minG = g;
+            if (g > maxG) maxG = g;
+            if (b < minB) minB = b;
+            if (b > maxB) maxB = b;
+        }
     }
-    if (!anyPixel) {
+    const bool solidBlob = anyPixel && allOpaque &&
+        (maxR - minR) + (maxG - minG) + (maxB - minB) < 24;
+    if (!anyPixel || solidBlob) {
         DeleteObject(dib);
         return nullptr;
     }
@@ -390,9 +410,34 @@ ID2D1Bitmap* BigIconFor(HWND hwnd) {
     return raw;
 }
 
+// An MSIX-packaged window's exe sits under \WindowsApps\ and typically
+// has no icon art of its own - the shell's index for it is generic
+// (WhatsApp: shellIdx 2), so the jumbo route "succeeds" with blank art
+// while the window itself answers WM_GETICON with the real package
+// logo (verified green at 64 px). For those windows the OWN icon must
+// run FIRST (D-076).
+bool ExeIsMsixPackaged(HWND hwnd) {
+    wchar_t path[MAX_PATH]{};
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (!pid) return false;
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) return false;
+    DWORD n = MAX_PATH;
+    const BOOL ok = QueryFullProcessImageNameW(proc, 0, path, &n);
+    CloseHandle(proc);
+    return ok && wcsstr(path, L"\\WindowsApps\\") != nullptr;
+}
+
 // Preferred icon source for any card/row drawing: hi-res first, the
-// window's own small icon as fallback.
+// window's own small icon as fallback - except MSIX-packaged windows,
+// whose "hi-res" shell art is generic and whose own icon is the real
+// logo.
 ID2D1Bitmap* CardIconFor(const WindowItem& item, UINT size) {
+    if (item.icon && ExeIsMsixPackaged(item.hwnd)) {
+        if (ID2D1Bitmap* own = IconFor(item.hwnd, item.icon, size))
+            return own;
+    }
     if (ID2D1Bitmap* big = BigIconFor(item.hwnd)) return big;
     if (item.icon) return IconFor(item.hwnd, item.icon, size);
     return nullptr;
@@ -671,7 +716,28 @@ ComPtr<ID2D1Bitmap> CaptureSnapshotWGC(HWND src) {
     }
 }
 
+// Peek ghosting (see the block below): the moved-window set, declared
+// early because CaptureSnapshot must refuse windows parked off-screen.
+struct Ghosted {
+    HWND hwnd;
+    RECT rc;    // exact pre-move rect
+};
+std::vector<Ghosted> g_ghosted;
+
+bool IsGhosted(HWND hwnd) {
+    for (const auto& g : g_ghosted)
+        if (g.hwnd == hwnd) return true;
+    return false;
+}
+
 ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
+    // Peek ghosting (below) parks windows outside the virtual screen;
+    // their video/render content pauses (Chromium blanks video in
+    // off-screen windows), so both the screen read (off-monitor) and
+    // WGC (paused surface) would cache black video frames - the
+    // "still opens gray/black, live thumb snaps to color" poison.
+    // Keep the previous good entry instead (D-076).
+    if (IsGhosted(src)) return nullptr;
     RECT rc{};
     // Extended frame bounds = the visible window, shadow excluded;
     // GetWindowRect on framed windows includes invisible resize borders.
@@ -761,11 +827,18 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     return bmp;
 }
 
-void CacheSnapshots(const std::vector<WindowItem>& items) {
+void CacheSnapshots(const std::vector<WindowItem>& items,
+                    const std::vector<HWND>* skip = nullptr) {
     if (!g_ctx) return;
     for (const auto& it : items) {
         if (it.minimized || !it.hwnd || !IsWindow(it.hwnd)) continue;
         if (IsIconic(it.hwnd)) continue;   // blank capture, skip
+        if (skip) {
+            bool skipped = false;
+            for (HWND h : *skip)
+                if (h == it.hwnd) { skipped = true; break; }
+            if (skipped) continue;
+        }
         ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(it.hwnd);
         if (bmp) {
             g_snapCache[it.hwnd] =
@@ -827,17 +900,14 @@ int CacheMissingSnapshots(const std::vector<WindowItem>& items,
 // owner/shell-only (E_ACCESSDENIED from outside); SW_HIDE drops the
 // taskbar buttons. Apps that veto the move (WM_WINDOWPOSCHANGING) are
 // skipped - peek degrades to leaving them visible.
-struct Ghosted {
-    HWND hwnd;
-    RECT rc;    // exact pre-move rect
-};
-std::vector<Ghosted> g_ghosted;
 
-void UnghostAll() {
+void UnghostAll(std::vector<HWND>* restored = nullptr) {
     for (const auto& g : g_ghosted) {
-        if (!IsWindow(g.hwnd)) continue;
-        SetWindowPos(g.hwnd, nullptr, g.rc.left, g.rc.top, 0, 0,
-                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        if (IsWindow(g.hwnd)) {
+            SetWindowPos(g.hwnd, nullptr, g.rc.left, g.rc.top, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            if (restored) restored->push_back(g.hwnd);
+        }
     }
     g_ghosted.clear();
 }
@@ -1287,7 +1357,14 @@ void Popup::Hide(bool capture) {
     if (!hwnd_) return;
     KillTimer(hwnd_, kPollTimer);
     KillTimer(hwnd_, kVerifyFgTimer);
-    UnghostAll();                  // never leave a ghosted desktop behind
+    // Restore first, remember WHO was ghosted: a just-restored window's
+    // renderer hasn't caught up yet (Chromium blanks video in off-screen
+    // windows and needs frames to repaint after restore), so re-capturing
+    // it now would cache a black-video frame - the still then opens
+    // gray/black until the live thumbnail replaces it. Just-restored
+    // windows keep their pre-peek snapshot (D-076).
+    std::vector<HWND> restored;
+    UnghostAll(&restored);
     UnregisterThumbnails();   // plan: previews live only while visible
     // Snap the visual to rest (also cancels a running animation) so the
     // next Show starts from a clean state.
@@ -1308,7 +1385,7 @@ void Popup::Hide(bool capture) {
     // is still ours - and defers the settle+capture to its verify tick.
     if (capture && settings_.thumbnails && !items_.empty()) {
         Sleep(32);
-        CacheSnapshots(items_);
+        CacheSnapshots(items_, &restored);
     }
 }
 
@@ -1547,6 +1624,11 @@ void Popup::UpdateHoverGhosting() {
     } else {
         UnghostAll();
     }
+    RetireGhostedThumbnails();
+    // Un-ghosted rows lost their thumbnails above (or on the previous
+    // hover) - bring them back live now that their windows are on
+    // screen again.
+    RegisterThumbnails();
 }
 
 void Popup::UpdateHoverX(bool over) {
@@ -1769,6 +1851,9 @@ void Popup::RegisterThumbnails() {
     for (auto& row : rows_) {
         if (row.isHeader || !row.card) continue;
         ++cards;
+        if (row.thumbLive) { ++live; continue; }   // kept live across a
+                                                   // partial re-register
+                                                   // (peek retire)
         if (row.thumbSlot.right <= row.thumbSlot.left) continue;
         RECT slot = row.thumbSlot;
         if (slot.top < vTop) slot.top = vTop;
@@ -1779,6 +1864,11 @@ void Popup::RegisterThumbnails() {
         if (it.minimized || IsIconic(it.hwnd)) {
             continue;   // DWM renders minimized sources blank;
                         // the snapshot card carries it
+        }
+        if (IsGhosted(it.hwnd)) {
+            continue;   // peek parked it off-screen: its live content
+                        // degrades (Chromium blanks video) - the card
+                        // keeps the pre-peek still frame instead (D-076)
         }
 
         HTHUMBNAIL th = nullptr;
@@ -1830,6 +1920,34 @@ void Popup::UnregisterThumbnails() {
     thumbs_.clear();
     for (auto& row : rows_) row.thumbLive = false;
     thumbsPending_ = false;
+}
+
+// Peek transition: retire the live thumbnails of just-ghosted windows
+// so their cards fall back to the pre-peek still frame (a ghosted
+// window's live content degrades - off-screen Chromium blanks video -
+// and the frozen real frame beats a black one; D-076).
+void Popup::RetireGhostedThumbnails() {
+    if (thumbs_.empty()) return;
+    bool any = false;
+    for (auto it = thumbs_.begin(); it != thumbs_.end(); ) {
+        if (IsGhosted(it->first)) {
+            if (it->second) DwmUnregisterThumbnail(it->second);
+            it = thumbs_.erase(it);
+            any = true;
+        } else {
+            ++it;
+        }
+    }
+    if (!any) return;
+    for (auto& row : rows_) {
+        if (!row.thumbLive) continue;
+        const int idx = row.item;
+        if (idx >= 0 && idx < static_cast<int>(items_.size()) &&
+            IsGhosted(items_[idx].hwnd)) {
+            row.thumbLive = false;
+        }
+    }
+    Render();   // redraw the stills into the retired slots
 }
 
 void Popup::ApplyAnimStart() {

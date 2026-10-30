@@ -151,6 +151,7 @@ private:
     void StartAnimation();          // compositor-driven pop-out
     void RegisterThumbnails();      // live previews, after the pop-in settles
     void UnregisterThumbnails();
+    void RetireGhostedThumbnails(); // peek: ghosted windows fall back to stills
     void UpdateHoverGhosting();     // peek-on-hover: hide the others
     void VerifyForeground();        // deferred switch check
 
