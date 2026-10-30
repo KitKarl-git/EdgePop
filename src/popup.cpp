@@ -100,6 +100,15 @@ constexpr float kCardWMax = 400.0f;      // ceiling - 480 read too wide on
                                          // my desk; 400 keeps headroom
                                          // over the 300 default
 constexpr float kThumbStripH = 26.0f;
+constexpr float kCardRailW = 12.0f;      // scroll-rail gutter to the RIGHT
+                                         // of the cards: the capsule rides
+                                         // in it, never over card pixels
+                                         // (D-089)
+constexpr float kCardRadius = 6.0f;      // card body corner radius - the
+                                         // lifted rounded rect that makes
+                                         // each card a visible object, so
+                                         // the edge-shrink reads as the
+                                         // whole object collapsing
 constexpr float kCardPadY = 0.0f;        // above the title strip: 0 - the
                                          // strip sits flush under the card's
                                          // top edge (the hovered card's teal
@@ -2320,12 +2329,16 @@ void Popup::Render() {
         // (over-mode) so text stays readable on bright previews.
         // `reserveR` keeps the last `reserveR` px of the row free (the
         // card close X lives there) so the text ellipsizes short of it.
+        // Cards stop at cardR - the scroll rail lives right of it
+        // (D-089); the classic icon+title list keeps the full width.
+        const float cardR = static_cast<float>(w) - pad - kCardRailW * scale_;
         auto drawTitle = [&](const WindowItem& item, float textLeft,
                              float yTop, float h2, bool shadow = false,
                              float reserveR = 0.0f) {
             if (!settings_.showTitles || !g_itemFmt || !g_text) return;
             const float maxW =
-                static_cast<float>(w) - textLeft - pad - reserveR;
+                static_cast<float>(w) - kCardRailW * scale_ - textLeft -
+                pad - reserveR;
             ComPtr<IDWriteTextLayout> layout;
             g_dwFactory->CreateTextLayout(
                 item.title.c_str(),
@@ -2379,7 +2392,15 @@ void Popup::Render() {
             }
             if (fs < 0.0f) fs = 0.0f;
             if (fs > 1.0f) fs = 1.0f;
-            shX0 = (static_cast<float>(w) * (1.0f - fs)) / 2.0f;
+            // Seam-side anchor (D-089, Karl: "right aligned towards the
+            // edge that it's coming from - like a macOS dock"): the
+            // shrunk card hugs the popup edge that faces the seam -
+            // where the pop-in extrudes from, where cards "come from".
+            // No centering: a centered shrunken card floated over the
+            // neighbors and read as overlap.
+            const bool seamRight =
+                animAnchorClient_.x > static_cast<int>(w) / 2;
+            shX0 = seamRight ? static_cast<float>(w) * (1.0f - fs) : 0.0f;
             return fs > 0.02f;   // false: fully out of view, skip row
         };
         auto mapRect = [&](RECT& rc, float fs, float shX0, float scaledTop,
@@ -2405,6 +2426,11 @@ void Popup::Render() {
                        static_cast<LONG>(top + rh) };
             float fs = 1.0f, shX0 = 0.0f, scaledTop = top;
             if (!beginRowScale(top, rh, fs, shX0, scaledTop)) {
+                // fully out of view: zero the rects so no stale
+                // geometry can hit-test or register a thumbnail
+                row.rc = {};
+                row.thumbSlot = {};
+                row.xCard = {};
                 top += rh;
                 continue;
             }
@@ -2443,6 +2469,24 @@ void Popup::Render() {
             const bool hot = static_cast<int>(r) == hoverRow_;
 
             if (row.card) {
+                // Card body (D-089): a lifted rounded rect spanning the
+                // whole card - the visible object that shrinks as a
+                // unit at the scroll edges (macOS-dock read). The
+                // preview well inside is the darker inset.
+                {
+                    ComPtr<ID2D1SolidColorBrush> cardBg;
+                    g_ctx->CreateSolidColorBrush(
+                        D2D1::ColorF(kColLiftR, kColLiftG, kColLiftB, 1.0f),
+                        &cardBg);
+                    if (cardBg) {
+                        const float cr = kCardRadius * scale_;
+                        g_ctx->FillRoundedRectangle(
+                            D2D1::RoundedRect(
+                                D2D1::RectF(0.0f, top, cardR, top + rh),
+                                cr, cr),
+                            cardBg.Get());
+                    }
+                }
                 // Thumbnail card: title strip (icon + title + X) ABOVE
                 // the preview slot - the taskbar-flyout arrangement
                 // (D-079). Minimized windows keep the card too -
@@ -2460,7 +2504,7 @@ void Popup::Render() {
                 const float sTop = top + kCardPadY * scale_;
                 const float slotTop = sTop + sH;
                 const float slotL = pad;
-                const float slotR = static_cast<float>(w) - pad;
+                const float slotR = cardR - pad;
                 const float slotB = slotTop + row.slotH;
                 row.thumbSlot = { static_cast<LONG>(slotL),
                                   static_cast<LONG>(slotTop),
@@ -2468,20 +2512,20 @@ void Popup::Render() {
                                   static_cast<LONG>(slotB) };
                 if (hot && g_header) {
                     g_ctx->DrawRectangle(
-                        D2D1::RectF(1.0f, top + 1.0f,
-                                    static_cast<float>(w) - 1.0f,
+                        D2D1::RectF(1.0f, top + 1.0f, cardR - 1.0f,
                                     top + rh - 1.0f),
                         g_header.Get(), 1.5f * scale_);
                 }
-                // Slot placeholder: PANEL-colored (D-084) - a darker slot
-                // read as a "gray bar" between a letterboxed preview and
-                // the next card's strip (Karl's screenshot); the native
-                // flyout has no slot frame either, previews just sit on
-                // the surface. Fills the letterbox bars, the registration
-                // delay, and failed/minimized slots.
+                // Preview well: a dark inset INSIDE the lifted card
+                // body (D-089) - the frame around the preview. (The
+                // D-084 panel-colored fill existed to kill a stray dark
+                // BAND on a bare panel; inside a visible card body the
+                // inset reads as the preview's frame, and clamped
+                // letterbox bars read as part of the well.)
                 ComPtr<ID2D1SolidColorBrush> slotBg;
                 g_ctx->CreateSolidColorBrush(
-                    D2D1::ColorF(kColPanelR, kColPanelG, kColPanelB, 1.0f),
+                    D2D1::ColorF(0x1E / 255.0f, 0x1B / 255.0f, 0x1B / 255.0f,
+                                 1.0f),
                     &slotBg);
                 if (slotBg) {
                     g_ctx->FillRectangle(D2D1::RectF(slotL, slotTop, slotR,
@@ -2536,8 +2580,7 @@ void Popup::Render() {
                 if (strip) {
                     if (hot && g_hover) {
                         g_ctx->FillRectangle(
-                            D2D1::RectF(0, sTop, static_cast<float>(w),
-                                        sTop + sH),
+                            D2D1::RectF(0, sTop, cardR, sTop + sH),
                             g_hover.Get());
                     }
                     float textLeft = pad;
@@ -2563,8 +2606,7 @@ void Popup::Render() {
                     // signal.
                     if (settings_.cardCloseButtons) {
                         const float cs = kCardXSz * scale_;
-                        const float cx0 =
-                            static_cast<float>(w) - pad - cs;
+                        const float cx0 = cardR - pad - cs;
                         const float cy0 = sTop + (sH - cs) / 2.0f;
                         row.xCard = {
                             static_cast<LONG>(cx0 - 2.0f * scale_),
@@ -2662,16 +2704,18 @@ void Popup::Render() {
         }
         g_ctx->PopAxisAlignedClip();
 
-        // Scroll indicator: a slim capsule hugging the right edge
-        // while the content overflows - indicator only, the wheel is the
-        // input. Starts below the close tab's hit rect so the two never
-        // fight over a pixel column.
+        // Scroll indicator: a slim capsule riding the rail to the
+        // RIGHT of the cards (D-089) - never over card pixels, never
+        // intersecting the hover border. Indicator only, the wheel is
+        // the input. Starts below the close tab's hit rect so the two
+        // never fight over a pixel column.
         if (maxScroll_ > 0) {
             const float trT = protrude + 8.0f * scale_;
             const float trB = static_cast<float>(h) - 2.0f * scale_;
             if (trB - trT > 24.0f * scale_) {
-                const float trL = static_cast<float>(w) - 7.0f * scale_;
-                const float trR = static_cast<float>(w) - 3.0f * scale_;
+                const float trL =
+                    cardR + 2.0f * scale_;   // inside the reserved rail
+                const float trR = cardR + 6.0f * scale_;
                 const float trackH = trB - trT;
                 const float vpH = static_cast<float>(h) - protrude;
                 const float thumbH = std::max(
