@@ -702,6 +702,22 @@ bool EnsureWgcDevice() {
     return true;
 }
 
+// Client rect in screen coordinates - the exact region DWM live
+// thumbnails show (fSourceClientAreaOnly). Stills MUST crop to the
+// same region or the two frame the window differently: a still over
+// the full frame carried the title bar + side borders the live thumb
+// crops out, so the still->live swap jumped and the dark borders read
+// as a "gray overlay" next to live cards (D-078).
+bool ClientRectOnScreen(HWND h, RECT& rc) {
+    RECT c{};
+    if (!GetClientRect(h, &c)) return false;
+    POINT tl{ c.left, c.top }, br{ c.right, c.bottom };
+    MapWindowPoints(h, nullptr, &tl, 1);
+    MapWindowPoints(h, nullptr, &br, 1);
+    rc = { tl.x, tl.y, br.x, br.y };
+    return rc.right > rc.left && rc.bottom > rc.top;
+}
+
 ComPtr<ID2D1Bitmap> CaptureSnapshotWGC(HWND src) {
     if (g_wgcBroken || !g_ctx || !IsWindow(src) || IsIconic(src)) return nullptr;
     if (OsBuildNumber() < 20348) {   // border-off floor: no yellow flashes
@@ -789,16 +805,39 @@ ComPtr<ID2D1Bitmap> CaptureSnapshotWGC(HWND src) {
         }
         // Box-average downscale into a kSnapshotMaxW-wide buffer, then
         // through the shared guard (same memory bound as the screen
-        // path).
+        // path). The WGC frame covers the WHOLE window (title bar
+        // included) - crop to the client fraction first so the still
+        // matches the live thumbnail's client-only framing (D-078);
+        // the frame maps onto GetWindowRect, so a per-monitor-v2
+        // window's invisible borders can shift the crop a pixel or
+        // two - imperceptible at card scale.
+        RECT wnd{}, cli{};
+        GetWindowRect(src, &wnd);
+        if (!ClientRectOnScreen(src, cli)) cli = wnd;
         const int fw = static_cast<int>(desc.Width);
         const int fh = static_cast<int>(desc.Height);
-        const int tw = fw > kSnapshotMaxW ? kSnapshotMaxW : fw;
-        const int th = tw * fh / fw;
+        const int wndW = wnd.right - wnd.left;
+        const int wndH = wnd.bottom - wnd.top;
+        int sx0 = 0, sy0 = 0, cw = fw, ch = fh;
+        if (wndW > 0 && wndH > 0) {
+            sx0 = (cli.left - wnd.left) * fw / wndW;
+            sy0 = (cli.top - wnd.top) * fh / wndH;
+            cw = (cli.right - cli.left) * fw / wndW;
+            ch = (cli.bottom - cli.top) * fh / wndH;
+        }
+        if (cw <= 0 || ch <= 0 || sx0 < 0 || sy0 < 0 ||
+            sx0 + cw > fw || sy0 + ch > fh) {
+            sx0 = 0; sy0 = 0; cw = fw; ch = fh;   // degenerate: full frame
+        }
+        const int tw = cw > kSnapshotMaxW ? kSnapshotMaxW : cw;
+        const int th = tw * ch / cw;
         std::vector<DWORD> scaled(static_cast<size_t>(tw) * th);
         for (int y = 0; y < th; ++y) {
-            const int y0 = y * fh / th, y1 = (y + 1) * fh / th;
+            const int y0 = sy0 + y * ch / th;
+            const int y1 = sy0 + (y + 1) * ch / th;
             for (int x = 0; x < tw; ++x) {
-                const int x0 = x * fw / tw, x1 = (x + 1) * fw / tw;
+                const int x0 = sx0 + x * cw / tw;
+                const int x1 = sx0 + (x + 1) * cw / tw;
                 unsigned long long r = 0, g2 = 0, b2 = 0, n = 0;
                 for (int sy = y0; sy < y1; ++sy) {
                     const DWORD* row = reinterpret_cast<const DWORD*>(
@@ -854,11 +893,14 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     // Keep the previous good entry instead (D-076).
     if (IsGhosted(src)) return nullptr;
     RECT rc{};
-    // Extended frame bounds = the visible window, shadow excluded;
-    // GetWindowRect on framed windows includes invisible resize borders.
-    if (FAILED(DwmGetWindowAttribute(src, DWMWA_EXTENDED_FRAME_BOUNDS,
-                                     &rc, sizeof(rc)))) {
-        if (!GetWindowRect(src, &rc)) return nullptr;
+    // Client area first (matches the live thumbnail's framing, see
+    // ClientRectOnScreen); extended frame bounds only as a fallback
+    // for windows whose client rect comes back empty.
+    if (!ClientRectOnScreen(src, rc)) {
+        if (FAILED(DwmGetWindowAttribute(src, DWMWA_EXTENDED_FRAME_BOUNDS,
+                                         &rc, sizeof(rc)))) {
+            if (!GetWindowRect(src, &rc)) return nullptr;
+        }
     }
     const int w = rc.right - rc.left;
     const int h = rc.bottom - rc.top;
@@ -1028,7 +1070,13 @@ void UnghostAll(std::vector<HWND>* restored = nullptr) {
 }
 
 void GhostAllBut(HWND keep, VirtualDesktops vd) {
-    UnghostAll();
+    std::vector<HWND> restored;
+    UnghostAll(&restored);
+    auto wasRestored = [restored](HWND h) {
+        for (HWND r : restored)
+            if (r == h) return true;
+        return false;
+    };
     if (!keep || !IsWindow(keep)) return;
     HMONITOR mon = MonitorFromWindow(keep, MONITOR_DEFAULTTONEAREST);
     if (!mon) return;
@@ -1055,11 +1103,16 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
         // freezes onto its still for the whole peek, and a stale one
         // reads as the "gray overlay" complaint (D-077). Capture-time
         // gate - hopping between cards must not re-capture the same
-        // windows every hop.
+        // windows every hop - and NEVER for a window this very call
+        // just restored: Chromium's video is still blank for a few
+        // hundred ms after restore, so that capture would freeze a
+        // black video frame over a card that was just playing (the
+        // "video disappearing is back" repro, D-078).
         const ULONGLONG nowTick = GetTickCount64();
         auto sn = g_snapCache.find(w.hwnd);
-        if (g_ctx && (sn == g_snapCache.end() ||
-                      nowTick - sn->second.captured > 2000)) {
+        if (g_ctx && !wasRestored(w.hwnd) &&
+            (sn == g_snapCache.end() ||
+             nowTick - sn->second.captured > 2000)) {
             ComPtr<ID2D1Bitmap> fresh = CaptureSnapshot(w.hwnd);
             if (fresh) {
                 g_snapCache[w.hwnd] =
