@@ -226,7 +226,9 @@ void FireHover(size_t idx) {
     size_t count = 0;
     for (const auto& s : sections) count += s.items.size();
     Log(L"  popup: " + std::to_wstring(count) +
-        L" window(s), " + std::to_wstring(sections.size()) + L" section(s)");
+        L" window(s), " + std::to_wstring(sections.size()) + L" section(s), " +
+        std::to_wstring(edgepop::CountCachedSnapshots(sections)) +
+        L" snapshot(s) cached");
     edgepop::Popup::Instance().Show(seg, g_mainMon, sections, cursor,
                                     g_settings);
 

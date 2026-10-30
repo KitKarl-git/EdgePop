@@ -51,8 +51,9 @@
 namespace edgepop {
 
 // Capture `hwnd`'s content into the popup's last-known snapshot cache.
-// Called by the minimize-start WinEvent hook so windows
-// keep a card snapshot after going down, taskbar-style.
+// Called by the minimize-start and foreground-change WinEvent hooks so
+// windows keep a card snapshot after going down or being buried,
+// taskbar-style.
 void CacheWindowSnapshot(HWND hwnd);
 
 // One labeled group of windows; label is empty for a single-monitor popup.
@@ -60,6 +61,10 @@ struct PopupSection {
     std::wstring label;
     std::vector<WindowItem> items;
 };
+
+// How many of these windows have a snapshot cached right now - show-time
+// observability for the icon-placeholder gap (logged in debug builds).
+int CountCachedSnapshots(const std::vector<PopupSection>& sections);
 
 class Popup {
 public:

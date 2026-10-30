@@ -91,6 +91,14 @@ constexpr ULONGLONG kThumbDelayMs = 240;   // pop-in (220 ms) must settle
 // CaptureSnapshot caches a window only when at least this % of sampled
 // points over its bounds hit-test to the window itself.
 constexpr int kSnapshotMinVisiblePct = 80;
+// Snapshot bitmap cap: card slots are at most card_width (<=400) px
+// wide, so anything larger is wasted D3D memory. A full-res 2560x1440
+// capture is ~14 MB; at this cap a full cache costs ~12 MB total.
+constexpr int kSnapshotMaxW = 480;
+// Cache size cap after dead-window pruning - LRU eviction, never a
+// clear-all (D-072: the wipe is what emptied Karl's cache and put icon
+// placeholders back on almost every card).
+constexpr size_t kSnapshotCacheMax = 24;
 
 // Overflow scrolling: content that exceeds the work area scrolls
 // inside a fixed viewport instead of rows being dropped. One wheel notch
@@ -378,7 +386,43 @@ ID2D1Bitmap* CardIconFor(const WindowItem& item, UINT size) {
 // keeps windows that live buried under a maximized window cached: close
 // time alone finds them occluded (the gate below refuses the occluder's
 // pixels, D-070) and they would forever show the icon placeholder.
-std::map<HWND, ComPtr<ID2D1Bitmap>> g_snapCache;
+// The cache must stay WARM: with foreground-change captures (D-071) it
+// accumulates entries fast, and the old >24 clear-all wiped it every few
+// minutes - popups then opened with icon placeholders for almost every
+// window (Karl repro, D-072). Evict instead: dead windows first, then
+// least-recently-used. Snapshots are downscaled at capture
+// (kSnapshotMaxW), so a full cache costs ~12 MB, not hundreds.
+struct SnapEntry {
+    ComPtr<ID2D1Bitmap> bmp;
+    ULONGLONG used;   // last cache/insert or card draw (LRU heat)
+};
+std::map<HWND, SnapEntry> g_snapCache;
+
+void PruneSnapshotCache() {
+    size_t dead = 0;
+    for (auto it = g_snapCache.begin(); it != g_snapCache.end(); ) {
+        if (!IsWindow(it->first)) {
+            it = g_snapCache.erase(it);
+            ++dead;
+        } else {
+            ++it;
+        }
+    }
+    size_t evicted = 0;
+    while (g_snapCache.size() > kSnapshotCacheMax) {
+        auto oldest = g_snapCache.begin();
+        for (auto it = g_snapCache.begin(); it != g_snapCache.end(); ++it) {
+            if (it->second.used < oldest->second.used) oldest = it;
+        }
+        g_snapCache.erase(oldest);
+        ++evicted;
+    }
+    if (dead || evicted) {
+        PLog(L"snapshot: prune %d dead, evict %d LRU (cache %d)",
+             static_cast<int>(dead), static_cast<int>(evicted),
+             static_cast<int>(g_snapCache.size()));
+    }
+}
 
 ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     RECT rc{};
@@ -417,10 +461,16 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
         return nullptr;
     }
 
+    // Downscale to card-slot resolution at capture time (kSnapshotMaxW):
+    // a warm cache of full-res captures would cost hundreds of MB of D3D
+    // memory; HALFTONE keeps the shrink from aliasing text into mush.
+    const int dw = w > kSnapshotMaxW ? kSnapshotMaxW : w;
+    const int dh = dw * h / w;
+
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;   // top-down
+    bi.bmiHeader.biWidth = dw;
+    bi.bmiHeader.biHeight = -dh;   // top-down
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
@@ -433,9 +483,11 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     BOOL ok = FALSE;
     if (screen && hdc) {
         HGDIOBJ old = SelectObject(hdc, dib);
+        SetStretchBltMode(hdc, HALFTONE);
+        SetBrushOrgEx(hdc, 0, 0, nullptr);   // HALFTONE requires this
         // CAPTUREBLT pulls in layered windows the plain blit skips.
-        ok = BitBlt(hdc, 0, 0, w, h, screen, rc.left, rc.top,
-                    SRCCOPY | CAPTUREBLT);
+        ok = StretchBlt(hdc, 0, 0, dw, dh, screen, rc.left, rc.top, w, h,
+                        SRCCOPY | CAPTUREBLT);
         SelectObject(hdc, old);
     }
     if (hdc) DeleteDC(hdc);
@@ -452,10 +504,10 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
         bool anyContent = false;
         long midTones = 0, samples = 0;
         const DWORD* px = static_cast<const DWORD*>(bits);
-        const int step = w > 4 ? w / 4 : 1;   // sample ~4 columns of rows
-        for (int y = 0; y < h; y += 8) {
-            for (int x = 0; x < w; x += step) {
-                const DWORD p = px[y * w + x];
+        const int step = dw > 4 ? dw / 4 : 1;   // sample ~4 columns of rows
+        for (int y = 0; y < dh; y += 8) {
+            for (int x = 0; x < dw; x += step) {
+                const DWORD p = px[y * dw + x];
                 const int r = static_cast<int>(p & 0xFF);
                 const int g2 = static_cast<int>((p >> 8) & 0xFF);
                 const int b = static_cast<int>((p >> 16) & 0xFF);
@@ -471,9 +523,9 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
             D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
                 D2D1_PIXEL_FORMAT{ DXGI_FORMAT_B8G8R8A8_UNORM,
                                    D2D1_ALPHA_MODE_PREMULTIPLIED });
-            g_ctx->CreateBitmap(D2D1_SIZE_U{ static_cast<UINT>(w),
-                                             static_cast<UINT>(h) },
-                                bits, static_cast<UINT>(w) * 4, props, &bmp);
+            g_ctx->CreateBitmap(D2D1_SIZE_U{ static_cast<UINT>(dw),
+                                             static_cast<UINT>(dh) },
+                                bits, static_cast<UINT>(dw) * 4, props, &bmp);
         }
     }
     DeleteObject(dib);
@@ -486,13 +538,16 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
 
 void CacheSnapshots(const std::vector<WindowItem>& items) {
     if (!g_ctx) return;
-    if (g_snapCache.size() > 24) g_snapCache.clear();
     for (const auto& it : items) {
         if (it.minimized || !it.hwnd || !IsWindow(it.hwnd)) continue;
         if (IsIconic(it.hwnd)) continue;   // blank capture, skip
         ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(it.hwnd);
-        if (bmp) g_snapCache[it.hwnd] = std::move(bmp);
+        if (bmp) {
+            g_snapCache[it.hwnd] =
+                SnapEntry{ std::move(bmp), GetTickCount64() };
+        }
     }
+    PruneSnapshotCache();
 }
 
 // --- peek-on-hover ghosting ------------------------------------
@@ -597,9 +652,21 @@ void CacheWindowSnapshot(HWND hwnd) {
     // callback ran, the surface is torn down and any capture is garbage
     // - skip.
     if (IsIconic(hwnd)) return;
-    if (g_snapCache.size() > 24) g_snapCache.clear();
     ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(hwnd);
-    if (bmp) g_snapCache[hwnd] = std::move(bmp);
+    if (bmp) {
+        g_snapCache[hwnd] = SnapEntry{ std::move(bmp), GetTickCount64() };
+        PruneSnapshotCache();
+    }
+}
+
+int CountCachedSnapshots(const std::vector<PopupSection>& sections) {
+    int n = 0;
+    for (const auto& s : sections) {
+        for (const auto& it : s.items) {
+            if (g_snapCache.count(it.hwnd)) ++n;
+        }
+    }
+    return n;
 }
 
 void Popup::SetLogSink(void (*fn)(const wchar_t*)) { g_logSink = fn; }
@@ -1746,8 +1813,9 @@ void Popup::Render() {
                     // minimized windows -): swapchain
                     // content, so it rides the pop-in animation.
                     auto sn = g_snapCache.find(item.hwnd);
-                    if (sn != g_snapCache.end() && sn->second) {
-                        const D2D1_SIZE_F sz = sn->second->GetSize();
+                    if (sn != g_snapCache.end() && sn->second.bmp) {
+                        sn->second.used = GetTickCount64();   // LRU heat
+                        const D2D1_SIZE_F sz = sn->second.bmp->GetSize();
                         if (sz.width > 0 && sz.height > 0) {
                             const double k =
                                 std::min((slotR - slotL) / sz.width,
@@ -1761,7 +1829,7 @@ void Popup::Render() {
                             const float dy =
                                 slotTop + (slotB - slotTop - dh) / 2;
                             g_ctx->DrawBitmap(
-                                sn->second.Get(),
+                                sn->second.bmp.Get(),
                                 D2D1::RectF(dx, dy, dx + dw, dy + dh));
                         }
                     } else if (settings_.showIcons && item.icon) {
