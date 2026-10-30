@@ -306,6 +306,21 @@ ComPtr<ID2D1Bitmap> IconToBitmap(ID2D1DeviceContext* ctx, HICON icon,
     SelectObject(hdc, old);
     DeleteDC(hdc);
 
+    // An all-empty render is a broken source, not an icon: MSIX-packaged
+    // apps (WhatsApp.Root.exe) ship no icon in the exe, and the shell's
+    // jumbo list hands back a blank/generic frame for them - "succeeding"
+    // here would strand the card with no visible icon while the window's
+    // own (smaller) WM_GETICON answer never gets tried (D-074).
+    bool anyPixel = false;
+    const DWORD* px = static_cast<const DWORD*>(bits);
+    for (UINT i = 0; i < size * size; ++i) {
+        if (px[i] != 0) { anyPixel = true; break; }
+    }
+    if (!anyPixel) {
+        DeleteObject(dib);
+        return nullptr;
+    }
+
     D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
         D2D1_PIXEL_FORMAT{ DXGI_FORMAT_B8G8R8A8_UNORM,
                            D2D1_ALPHA_MODE_PREMULTIPLIED });
@@ -1787,7 +1802,10 @@ void Popup::ApplyAnimStart() {
         g_scaleTf->SetScaleX(0.80f);
         g_scaleTf->SetScaleY(0.30f);
     }
-    if (g_visual3) g_visual3->SetOpacity(0.0f);
+    // Opacity stays 1: the pop-in is scale-only since D-074 (a 0-start
+    // opacity ramp washed the snapshot still frames gray for their first
+    // 130 ms).
+    if (g_visual3) g_visual3->SetOpacity(1.0f);
     g_dcomp->Commit();
 }
 
@@ -1804,8 +1822,8 @@ void Popup::StartAnimation() {
 
     // scale(u) = c0 + c1*u + c2*u^2 + c3*u^3 across [0, dur]; AddCubic
     // takes seconds, so divide the coefficients by the duration powers.
-    const double dur = 0.22, opDur = 0.13;
-    ComPtr<IDCompositionAnimation> aSeam, aCross, aOp;
+    const double dur = 0.22;
+    ComPtr<IDCompositionAnimation> aSeam, aCross;
     auto make = [&](float c0, float c1, float c2, float c3, double d,
                     IDCompositionAnimation** out) {
         if (FAILED(g_dcomp->CreateAnimation(out))) return;
@@ -1822,9 +1840,14 @@ void Popup::StartAnimation() {
     // Cross axis from 0.80: 0.80 + 0.20 * (3u^2 - 2u^3).
     make(0.80f, 0.0f, 0.20f * kSmoothV, 0.20f * kSmoothW, dur,
          aCross.GetAddressOf());
-    // Opacity from 0: 3u^2 - 2u^3.
-    make(0.0f, 0.0f, kSmoothV, kSmoothW, opDur, aOp.GetAddressOf());
-    if (!aSeam || !aCross || !aOp) return;
+    // Scale-only pop-in: opacity stays 1 throughout. The retired 0->1
+    // ramp rode the snapshot still frames as a gray wash for 130 ms,
+    // then the live DWM thumbnail snapped in at full opacity (Karl:
+    // "thumbnails start a little gray, then snap to the correct color",
+    // D-074). The extrusion alone keeps the dock feel, and the still
+    // frame is full-color from the first frame, so the live swap is
+    // invisible.
+    if (!aSeam || !aCross) return;
 
     if (animVerticalSeam_) {
         g_scaleTf->SetScaleX(aSeam.Get());
@@ -1833,7 +1856,6 @@ void Popup::StartAnimation() {
         g_scaleTf->SetScaleX(aCross.Get());
         g_scaleTf->SetScaleY(aSeam.Get());
     }
-    if (g_visual3) g_visual3->SetOpacity(aOp.Get());
     g_dcomp->Commit();
 }
 
