@@ -2369,17 +2369,19 @@ void Popup::Render() {
             D2D1::RectF(0.0f, protrude, static_cast<float>(w),
                         static_cast<float>(h)),
             D2D1_ANTIALIAS_MODE_ALIASED);
-        float layoutY = protrude - scrollOff_;   // layout cursor
-        // Edge shrink (D-088/D-090): a row crossing the viewport's top
-        // or bottom scales down as a WHOLE - and the rows below slide
-        // up to stay attached (D-090 compression, macOS-dock style:
-        // the stack closes the gap; the old edge-anchored shrink left
-        // a full-width dead band that read as an un-shrunk background).
-        // The scale is uniform so an aspect-true preview keeps its
-        // shape; hit rects and the thumbnail dest follow the scaled
-        // geometry, and the shrink hugs the CARDS' seam-side edge
-        // (cardR), never the popup edge - the scroll rail stays clear.
-        float shiftUp = 0.0f;
+        // Edge shrink (D-088, anchor fixed D-090, compression REVERTED
+        // D-091): a row crossing the viewport's top or bottom scales
+        // down as a WHOLE, hugging the CARDS' seam-side edge (cardR) -
+        // never the popup edge, so the scroll rail stays clear. The
+        // geometry is inherently flush: a top-exiting row occupies
+        // [protrude, protrude + rh*fs] and the next row's layout top IS
+        // that bottom (fs = 1 - d/rh) - no gap to close. The D-090
+        // "compression" shift was computed wrong (it pulled following
+        // rows up INTO the shrinking card, made partially-scrolled
+        // cards render full-size in wrong places, and shortened the
+        // stack - a blank band at the popup bottom); it fixed a dead
+        // band that never existed, an E2E checker artifact.
+        float top = protrude - scrollOff_;
         const float vBotF = static_cast<float>(h);
         auto beginRowScale = [&](float rowTop, float rowH, float& fs,
                                  float& shX0, float& scaledTop) {
@@ -2418,7 +2420,6 @@ void Popup::Render() {
         };
         for (size_t r = 0; r < rows_.size(); ++r) {
             RowInfo& row = rows_[r];
-            const float top = layoutY - shiftUp;   // effective row top
             const float rh =
                 row.isHeader
                     ? headerH
@@ -2437,7 +2438,7 @@ void Popup::Render() {
                 row.rc = {};
                 row.thumbSlot = {};
                 row.xCard = {};
-                layoutY += rh;
+                top += rh;
                 continue;
             }
             if (fs != 1.0f) {
@@ -2466,9 +2467,8 @@ void Popup::Render() {
                 if (fs != 1.0f) {
                     g_ctx->SetTransform(D2D1_MATRIX_3X2_F{ 1, 0, 0, 1, 0, 0 });
                     mapRect(row.rc, fs, shX0, scaledTop, top);
-                    if (top < protrude) shiftUp += rh * (1.0f - fs);
                 }
-                layoutY += rh;
+                top += rh;
                 continue;
             }
 
@@ -2706,9 +2706,8 @@ void Popup::Render() {
                 mapRect(row.rc, fs, shX0, scaledTop, top);
                 mapRect(row.thumbSlot, fs, shX0, scaledTop, top);
                 mapRect(row.xCard, fs, shX0, scaledTop, top);
-                if (top < protrude) shiftUp += rh * (1.0f - fs);
             }
-            layoutY += rh;
+            top += rh;
         }
         g_ctx->PopAxisAlignedClip();
 
