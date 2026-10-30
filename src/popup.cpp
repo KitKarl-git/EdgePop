@@ -2376,13 +2376,15 @@ void Popup::Render() {
                                     top + rh - 1.0f),
                         g_header.Get(), 1.5f * scale_);
                 }
-                // Slot placeholder: the panel behind the letterbox bars,
-                // during the registration delay, and permanently when
-                // registration failed or the window is minimized.
+                // Slot placeholder: PANEL-colored (D-084) - a darker slot
+                // read as a "gray bar" between a letterboxed preview and
+                // the next card's strip (Karl's screenshot); the native
+                // flyout has no slot frame either, previews just sit on
+                // the surface. Fills the letterbox bars, the registration
+                // delay, and failed/minimized slots.
                 ComPtr<ID2D1SolidColorBrush> slotBg;
                 g_ctx->CreateSolidColorBrush(
-                    D2D1::ColorF(0x1E / 255.0f, 0x1B / 255.0f, 0x1B / 255.0f,
-                                 1.0f),
+                    D2D1::ColorF(kColPanelR, kColPanelG, kColPanelB, 1.0f),
                     &slotBg);
                 if (slotBg) {
                     g_ctx->FillRectangle(D2D1::RectF(slotL, slotTop, slotR,
