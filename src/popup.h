@@ -33,11 +33,12 @@
 // the title ellipsizes short of it. Clicking it WM_CLOSEs that window
 // and the popup rebuilds in place.
 //
-// Peek-on-hover keeps every card's thumbnail LIVE while the hovered
-// window's occluders are parked off-screen (D-079) - non-hovered cards
-// never fall back to their cached stills. The parked windows keep a
-// 4 px sliver on-screen (D-080) so Chromium-family renderers never see
-// "hidden" and video keeps playing in the flesh and in its card.
+// Peek-on-hover hides only the hovered window's occluders (D-079):
+// cards of windows that were never ghosted stay fully live, and the
+// ghosted cards freeze on their FRESH pre-peek stills (captured the
+// moment the hover started) - a parked Chromium-family renderer pauses
+// no matter how much of it stays on-screen (probed to 256 px, D-080),
+// so a frozen real frame beats the frozen-or-black live thumb.
 #pragma once
 
 #include <windows.h>
@@ -154,6 +155,7 @@ private:
     void StartAnimation();          // compositor-driven pop-out
     void RegisterThumbnails();      // live previews, after the pop-in settles
     void UnregisterThumbnails();
+    void RetireGhostedThumbnails(); // peek: ghosted cards freeze on fresh stills
     void UpdateHoverGhosting();     // peek-on-hover: hide the occluders
     void VerifyForeground();        // deferred switch check
 

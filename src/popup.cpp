@@ -871,8 +871,7 @@ ComPtr<ID2D1Bitmap> CaptureSnapshotWGC(HWND src) {
 }
 
 // Peek ghosting (see the block below): the moved-window set, declared
-// early because CaptureSnapshot must refuse windows parked off-screen
-// (they keep only a sliver on-screen, D-080 - never capture one).
+// early because CaptureSnapshot must refuse windows parked off-screen.
 struct Ghosted {
     HWND hwnd;
     RECT rc;    // exact pre-move rect
@@ -1050,11 +1049,9 @@ int CacheMissingSnapshots(const std::vector<WindowItem>& items,
 // the peek, and parking them off-screen buys nothing but disturbance -
 // a video playing elsewhere on the monitor would go dark on the desktop
 // AND blank in its live card (Chromium pauses video in off-screen
-// windows). Hiding = moving the window outside the
-// virtual screen except a 4 px sliver (D-080: a fully-off-screen
-// window counts as hidden and Chromium-family renderers pause -
-// video blanks; any visible region keeps them running), then
-// restoring its exact rect afterwards - the only
+// windows - at ANY on-screen sliver, probed to 256 px, D-080).
+// Hiding = moving the window fully outside
+// the virtual screen, then restoring its exact rect afterwards - the only
 // cross-process hide that provably cannot damage a foreign renderer:
 // the app keeps rendering (the swapchain never notices a position
 // change), its DWM thumbnail stays alive and the taskbar button stays.
@@ -1150,20 +1147,13 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
                     SnapEntry{ std::move(fresh), nowTick, nowTick };
             }
         }
-        // Parked left of the virtual screen with a small SLIVER still
-        // on the leftmost monitor (D-080): a window pushed FULLY
-        // outside the virtual screen counts as hidden, and
-        // Chromium-family renderers react to "hidden" by pausing the
-        // compositor - video in the parked browser goes black and its
-        // live card blacks out with it (Karl: "the video still blacks
-        // out and it's not playing"). ANY visible region keeps the
-        // renderer running, and a few px at the outer screen edge are
-        // invisible in practice - no seam and no taskbar live there.
-        // Unchanged top: same monitor order, minimal surprise on
-        // restore.
-        constexpr int kGhostSliverPx = 4;
-        if (SetWindowPos(w.hwnd, nullptr, vsL - width + kGhostSliverPx,
-                         rc.top, 0, 0,
+        // Fully left of the virtual screen, unchanged top: same monitor
+        // order, minimal surprise on restore. (A visible sliver does NOT
+        // keep Chromium-family renderers alive - probed with an animated
+        // Edge window at 4..256 px on-screen: paused at every size, so
+        // ghosted cards freeze onto their fresh pre-peek stills instead,
+        // see RetireGhostedThumbnails; D-080.)
+        if (SetWindowPos(w.hwnd, nullptr, vsL - width - 64, rc.top, 0, 0,
                          SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)) {
             g_ghosted.push_back({ w.hwnd, rc });
             ++ghosts;
@@ -1843,8 +1833,9 @@ void Popup::UpdateHover(int row) {
 }
 
 // Peek-on-hover: the hovered entry's window stays visible and its
-// OCCLUDERS hide until the hover moves on; every card keeps its live
-// thumbnail throughout (D-079 - the still-freeze swap is gone).
+// OCCLUDERS hide until the hover moves on; their cards freeze on fresh
+// pre-peek stills (the renderer pauses off-screen), every other card
+// stays live (D-079/D-080).
 void Popup::UpdateHoverGhosting() {
     if (hoverRow_ >= 0 && hoverRow_ < static_cast<int>(rows_.size()) &&
         !rows_[hoverRow_].isHeader && rows_[hoverRow_].item >= 0) {
@@ -1853,6 +1844,7 @@ void Popup::UpdateHoverGhosting() {
     } else {
         UnghostAll();
     }
+    RetireGhostedThumbnails();
     // Re-register only once the pop-in has settled: DWM thumbnails
     // ignore the DComp scale animation and would composite FULL-SIZE
     // over the still-animating panel (Karl's slow-mo video, D-077).
@@ -2081,8 +2073,8 @@ void Popup::RegisterThumbnails() {
         if (row.isHeader || !row.card) continue;
         ++cards;
         if (row.thumbLive) { ++live; continue; }   // a partial re-register
-                                                   // (scroll, peek) must
-                                                   // not double-register
+                                                   // (scroll) must not
+                                                   // double-register
         if (row.thumbSlot.right <= row.thumbSlot.left) continue;
         RECT slot = row.thumbSlot;
         if (slot.top < vTop) slot.top = vTop;
@@ -2094,12 +2086,13 @@ void Popup::RegisterThumbnails() {
             continue;   // DWM renders minimized sources blank;
                         // the snapshot card carries it
         }
-        // Ghosted (peek-parked) windows keep their LIVE thumbnail
-        // (D-079): their card must never fall back to the cached still
-        // - the swap reads as low-res/gray next to the hovered card.
-        // The ghost leaves a sliver on-screen (D-080), so even
-        // Chromium-family windows keep rendering and their cards keep
-        // streaming video.
+        if (IsGhosted(it.hwnd)) {
+            continue;   // peek parked it off-screen: Chromium-family
+                        // renderers pause there (any sliver, probed
+                        // D-080), so the card shows the fresh pre-peek
+                        // still instead - frozen real frame, never
+                        // black; non-ghosted cards stay live (D-079)
+        }
 
         HTHUMBNAIL th = nullptr;
         HRESULT hr = DwmRegisterThumbnail(hwnd_, it.hwnd, &th);
@@ -2150,6 +2143,39 @@ void Popup::UnregisterThumbnails() {
     thumbs_.clear();
     for (auto& row : rows_) row.thumbLive = false;
     thumbsPending_ = false;
+}
+
+// Peek transition: retire the live thumbnails of just-ghosted windows
+// so their cards fall back to their fresh pre-peek still (captured in
+// GhostAllBut a moment earlier, client-cropped since D-078 - the frame
+// the live thumb showed at freeze time, so the swap is seamless). A
+// parked Chromium-family window STOPS RENDERING - probed (D-080): an
+// animated Edge window parked with up to 256 px still on-screen is
+// paused at every sliver size, and its live thumb goes frozen-or-black
+// (video blanks). The frozen REAL frame beats that; non-hovered cards
+// of windows that were never ghosted stay fully live (D-079).
+void Popup::RetireGhostedThumbnails() {
+    if (thumbs_.empty()) return;
+    bool any = false;
+    for (auto it = thumbs_.begin(); it != thumbs_.end(); ) {
+        if (IsGhosted(it->first)) {
+            if (it->second) DwmUnregisterThumbnail(it->second);
+            it = thumbs_.erase(it);
+            any = true;
+        } else {
+            ++it;
+        }
+    }
+    if (!any) return;
+    for (auto& row : rows_) {
+        if (!row.thumbLive) continue;
+        const int idx = row.item;
+        if (idx >= 0 && idx < static_cast<int>(items_.size()) &&
+            IsGhosted(items_[idx].hwnd)) {
+            row.thumbLive = false;
+        }
+    }
+    Render();   // redraw the stills into the retired slots
 }
 
 void Popup::ApplyAnimStart() {
