@@ -775,6 +775,41 @@ void CacheSnapshots(const std::vector<WindowItem>& items) {
     PruneSnapshotCache();
 }
 
+// Show-path variant (D-075): capture only windows the cache doesn't
+// have yet, within a total time budget. A cold window (opened after
+// the startup warm-up, LRU-evicted, or failed once at warm-up)
+// otherwise flashes the gray placeholder + icon until its live
+// thumbnail registers - the "starts gray, snaps to color" complaint.
+// Runs before the popup is on screen, so screen captures can't embed
+// popup pixels. Warm caches pay nothing; a cold fire pays a few tens
+// of ms per missing window.
+int CacheMissingSnapshots(const std::vector<WindowItem>& items,
+                          ULONGLONG budgetMs) {
+    if (!g_ctx) return 0;
+    const ULONGLONG start = GetTickCount64();
+    int captured = 0, missing = 0;
+    for (const auto& it : items) {
+        if (it.minimized || !it.hwnd || !IsWindow(it.hwnd)) continue;
+        if (IsIconic(it.hwnd)) continue;   // no live surface to read
+        if (g_snapCache.count(it.hwnd)) continue;
+        ++missing;
+        ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(it.hwnd);
+        if (bmp) {
+            g_snapCache[it.hwnd] =
+                SnapEntry{ std::move(bmp), GetTickCount64() };
+            ++captured;
+        }
+        // At least one attempt per fire even if the first window is
+        // pathologically slow; the budget then stops the stall.
+        if (GetTickCount64() - start >= budgetMs) break;
+    }
+    PruneSnapshotCache();
+    if (missing)
+        PLog(L"snapshot: show-time %d/%d missing captured (%llu ms)",
+             captured, missing, GetTickCount64() - start);
+    return captured;
+}
+
 // --- peek-on-hover ghosting ------------------------------------
 //
 // Taskbar-preview behavior: while an entry is hovered, every OTHER window
@@ -1093,6 +1128,12 @@ void Popup::Show(const Segment& segment, const MonitorRect& main,
 
     EnsureRenderStack();
     if (!stackOk_) return;
+
+    // D-075: fill snapshot gaps before the popup appears - a card
+    // without a still draws the gray placeholder + icon for the whole
+    // registration delay. Budget-capped; nothing to do when warm.
+    if (s.thumbnails && !items_.empty())
+        CacheMissingSnapshots(items_, 300);
 
     // DPI of the monitor the popup will live on.
     const HMONITOR anchor = s.side == PopupSide::Main
