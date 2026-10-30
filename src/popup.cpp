@@ -8,6 +8,7 @@
 
 #include <d2d1_3.h>
 #include <d2d1helper.h>
+#include <wincodec.h>   // MSIX package logo PNGs (D-077)
 #include <d3d11.h>
 #include <dcomp.h>
 #include <dwrite.h>
@@ -41,6 +42,7 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "windowsapp.lib")   // RoGetActivationFactory (WGC)
+#pragma comment(lib, "windowscodecs.lib")   // WIC: MSIX package logo PNGs
 
 namespace edgepop {
 namespace {
@@ -410,13 +412,15 @@ ID2D1Bitmap* BigIconFor(HWND hwnd) {
     return raw;
 }
 
-// An MSIX-packaged window's exe sits under \WindowsApps\ and typically
-// has no icon art of its own - the shell's index for it is generic
-// (WhatsApp: shellIdx 2), so the jumbo route "succeeds" with blank art
-// while the window itself answers WM_GETICON with the real package
-// logo (verified green at 64 px). For those windows the OWN icon must
-// run FIRST (D-076).
-bool ExeIsMsixPackaged(HWND hwnd) {
+// An MSIX-packaged window's exe sits under \WindowsApps\<PackageFullName>
+// and typically has no icon art of its own - the shell's index is
+// generic (WhatsApp: shellIdx 2) and the window's WM_GETICON answer is
+// small art (~24 px, pixelated at card scale). The REAL hi-res icon is
+// the package logo: AppxManifest.xml's VisualElements/Square44x44Logo,
+// resolved to its .targetsize-256 / .scale variants inside the package
+// folder. Directory LISTING under \WindowsApps is ACL-denied but the
+// manifest and asset files are directly readable (probed, D-077).
+bool MsixRootFor(HWND hwnd, std::wstring& root) {
     wchar_t path[MAX_PATH]{};
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
@@ -426,18 +430,128 @@ bool ExeIsMsixPackaged(HWND hwnd) {
     DWORD n = MAX_PATH;
     const BOOL ok = QueryFullProcessImageNameW(proc, 0, path, &n);
     CloseHandle(proc);
-    return ok && wcsstr(path, L"\\WindowsApps\\") != nullptr;
+    if (!ok) return false;
+    const wchar_t* tag = wcsstr(path, L"\\WindowsApps\\");
+    if (!tag) return false;
+    const wchar_t* pkg = tag + wcslen(L"\\WindowsApps\\");
+    const wchar_t* pkgEnd = wcschr(pkg, L'\\');   // past <PackageFullName>
+    if (!pkgEnd || pkgEnd == pkg) return false;
+    root.assign(path, pkgEnd - path);   // ...\WindowsApps\<PackageFullName>
+    return true;
 }
 
-// Preferred icon source for any card/row drawing: hi-res first, the
-// window's own small icon as fallback - except MSIX-packaged windows,
-// whose "hi-res" shell art is generic and whose own icon is the real
-// logo.
-ID2D1Bitmap* CardIconFor(const WindowItem& item, UINT size) {
-    if (item.icon && ExeIsMsixPackaged(item.hwnd)) {
-        if (ID2D1Bitmap* own = IconFor(item.hwnd, item.icon, size))
-            return own;
+// One attribute out of AppxManifest.xml without an XML dependency
+// (D-001): case-insensitive scan for Square44x44Logo="...".
+bool ManifestSquare44Logo(const std::wstring& root, std::wstring& rel) {
+    HANDLE f = CreateFileW((root + L"\\AppxManifest.xml").c_str(),
+                           GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    std::vector<char> buf(48 * 1024);
+    DWORD got = 0;
+    const BOOL ok = ReadFile(f, buf.data(),
+                             static_cast<DWORD>(buf.size() - 1), &got,
+                             nullptr);
+    CloseHandle(f);
+    if (!ok || got == 0) return false;
+    buf[got] = 0;
+    std::string low(buf.data());
+    for (auto& ch : low)
+        ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    const std::string key = "square44x44logo=\"";
+    const size_t at = low.find(key);
+    if (at == std::string::npos) return false;
+    const size_t vAt = at + key.size();
+    const size_t end = low.find('"', vAt);
+    if (end == std::string::npos) return false;
+    std::string relA(buf.data() + vAt, end - vAt);
+    std::wstring relW(relA.begin(), relA.end());   // manifest is ASCII
+    for (auto& ch : relW)
+        if (ch == L'/') ch = L'\\';
+    rel = relW;
+    return !rel.empty();
+}
+
+ComPtr<IWICImagingFactory> g_wic;
+
+ComPtr<ID2D1Bitmap> DecodePngToBitmap(const std::wstring& path) {
+    if (!g_wic &&
+        FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                                CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&g_wic)))) {
+        return nullptr;
     }
+    ComPtr<IWICBitmapDecoder> dec;
+    if (FAILED(g_wic->CreateDecoderFromFilename(
+            path.c_str(), nullptr, GENERIC_READ,
+            WICDecodeMetadataCacheOnDemand, &dec))) {
+        return nullptr;
+    }
+    ComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(dec->GetFrame(0, &frame)) || !frame) return nullptr;
+    ComPtr<IWICFormatConverter> conv;
+    UINT w = 0, h = 0;
+    if (FAILED(g_wic->CreateFormatConverter(&conv)) || !conv ||
+        FAILED(conv->Initialize(frame.Get(),
+                                GUID_WICPixelFormat32bppPBGRA,
+                                WICBitmapDitherTypeNone, nullptr, 0.0,
+                                WICBitmapPaletteTypeMedianCut)) ||
+        FAILED(conv->GetSize(&w, &h)) || !w || !h) {
+        return nullptr;
+    }
+    std::vector<BYTE> px(static_cast<size_t>(w) * h * 4);
+    if (FAILED(conv->CopyPixels(nullptr, w * 4,
+                                static_cast<UINT>(px.size()),
+                                px.data()))) {
+        return nullptr;
+    }
+    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+        D2D1_PIXEL_FORMAT{ DXGI_FORMAT_B8G8R8A8_UNORM,
+                           D2D1_ALPHA_MODE_PREMULTIPLIED });
+    ComPtr<ID2D1Bitmap> bmp;
+    g_ctx->CreateBitmap(D2D1_SIZE_U{ w, h }, px.data(), w * 4, props,
+                        &bmp);
+    return bmp;
+}
+
+// Preferred icon source for any card/row drawing: MSIX package logo
+// (256 px) first, then the exe jumbo, then the window's own small icon.
+// The package logo outranks everything for \WindowsApps exes - their
+// shell art is generic and their WM_GETICON art is tiny (D-076/D-077).
+std::map<std::wstring, ComPtr<ID2D1Bitmap>> g_pkgIconCache;
+
+ID2D1Bitmap* PackageLogoFor(HWND hwnd) {
+    std::wstring root;
+    if (!MsixRootFor(hwnd, root)) return nullptr;
+    auto it = g_pkgIconCache.find(root);
+    if (it != g_pkgIconCache.end()) return it->second.Get();
+    if (g_pkgIconCache.size() > 16) g_pkgIconCache.clear();
+
+    ComPtr<ID2D1Bitmap> bmp;
+    std::wstring rel;
+    if (ManifestSquare44Logo(root, rel)) {
+        const std::wstring full = root + L"\\" + rel;
+        const size_t dot = full.find_last_of(L'.');
+        if (dot != std::string::npos) {
+            for (const wchar_t* variant :
+                 { L".targetsize-256", L".targetsize-128", L".scale-400",
+                   L".scale-200" }) {
+                const std::wstring cand =
+                    full.substr(0, dot) + variant + full.substr(dot);
+                bmp = DecodePngToBitmap(cand);
+                if (bmp) break;
+            }
+        }
+        if (!bmp) bmp = DecodePngToBitmap(full);
+    }
+    ID2D1Bitmap* raw = bmp ? bmp.Get() : nullptr;
+    g_pkgIconCache[root] = std::move(bmp);   // failures cache too
+    if (raw) PLog(L"icon: package logo %s", root.c_str());
+    return raw;
+}
+
+ID2D1Bitmap* CardIconFor(const WindowItem& item, UINT size) {
+    if (ID2D1Bitmap* logo = PackageLogoFor(item.hwnd)) return logo;
     if (ID2D1Bitmap* big = BigIconFor(item.hwnd)) return big;
     if (item.icon) return IconFor(item.hwnd, item.icon, size);
     return nullptr;
@@ -468,7 +582,8 @@ ID2D1Bitmap* CardIconFor(const WindowItem& item, UINT size) {
 // (kSnapshotMaxW), so a full cache costs ~12 MB, not hundreds.
 struct SnapEntry {
     ComPtr<ID2D1Bitmap> bmp;
-    ULONGLONG used;   // last cache/insert or card draw (LRU heat)
+    ULONGLONG used;      // last cache/insert or card draw (LRU heat)
+    ULONGLONG captured;  // when the pixels were taken (staleness)
 };
 std::map<HWND, SnapEntry> g_snapCache;
 
@@ -842,7 +957,7 @@ void CacheSnapshots(const std::vector<WindowItem>& items,
         ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(it.hwnd);
         if (bmp) {
             g_snapCache[it.hwnd] =
-                SnapEntry{ std::move(bmp), GetTickCount64() };
+                SnapEntry{ std::move(bmp), GetTickCount64(), GetTickCount64() };
         }
     }
     PruneSnapshotCache();
@@ -869,7 +984,7 @@ int CacheMissingSnapshots(const std::vector<WindowItem>& items,
         ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(it.hwnd);
         if (bmp) {
             g_snapCache[it.hwnd] =
-                SnapEntry{ std::move(bmp), GetTickCount64() };
+                SnapEntry{ std::move(bmp), GetTickCount64(), GetTickCount64() };
             ++captured;
         }
         // At least one attempt per fire even if the first window is
@@ -936,6 +1051,21 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
         RECT rc{};
         if (!GetWindowRect(w.hwnd, &rc)) continue;
         const int width = rc.right - rc.left;
+        // Fresh frame while the window is STILL on screen: the card
+        // freezes onto its still for the whole peek, and a stale one
+        // reads as the "gray overlay" complaint (D-077). Capture-time
+        // gate - hopping between cards must not re-capture the same
+        // windows every hop.
+        const ULONGLONG nowTick = GetTickCount64();
+        auto sn = g_snapCache.find(w.hwnd);
+        if (g_ctx && (sn == g_snapCache.end() ||
+                      nowTick - sn->second.captured > 2000)) {
+            ComPtr<ID2D1Bitmap> fresh = CaptureSnapshot(w.hwnd);
+            if (fresh) {
+                g_snapCache[w.hwnd] =
+                    SnapEntry{ std::move(fresh), nowTick, nowTick };
+            }
+        }
         // Fully left of the virtual screen, unchanged top: same monitor
         // order, minimal surprise on restore.
         if (SetWindowPos(w.hwnd, nullptr, vsL - width - 64, rc.top, 0, 0,
@@ -984,7 +1114,7 @@ void CacheWindowSnapshot(HWND hwnd) {
     if (IsIconic(hwnd)) return;
     ComPtr<ID2D1Bitmap> bmp = CaptureSnapshot(hwnd);
     if (bmp) {
-        g_snapCache[hwnd] = SnapEntry{ std::move(bmp), GetTickCount64() };
+        g_snapCache[hwnd] = SnapEntry{ std::move(bmp), GetTickCount64(), GetTickCount64() };
         PruneSnapshotCache();
     }
 }
@@ -1625,10 +1755,11 @@ void Popup::UpdateHoverGhosting() {
         UnghostAll();
     }
     RetireGhostedThumbnails();
-    // Un-ghosted rows lost their thumbnails above (or on the previous
-    // hover) - bring them back live now that their windows are on
-    // screen again.
-    RegisterThumbnails();
+    // Re-register only once the pop-in has settled: DWM thumbnails
+    // ignore the DComp scale animation and would composite FULL-SIZE
+    // over the still-animating panel (Karl's slow-mo video, D-077).
+    // While thumbsPending_, the poll timer owns the first registration.
+    if (!thumbsPending_) RegisterThumbnails();
 }
 
 void Popup::UpdateHoverX(bool over) {
