@@ -67,6 +67,11 @@ struct Settings {
     unsigned cardWidth = 300;       // thumbnail popup width in px; the
                                     // default is 300 (420/480
                                     // read too wide), hard range 230-400
+    unsigned cardMaxHeight = 260;  // preview slot height CEILING in px -
+                                    // slots are aspect-true per window
+                                    // (D-085) and clamp here so a portrait
+                                    // window cannot eat the popup; hard
+                                    // range 120-400
 
     // [windows]
     VirtualDesktops virtualDesktops = VirtualDesktops::Current;

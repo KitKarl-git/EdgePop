@@ -147,6 +147,10 @@ Settings LoadSettings(const wchar_t* ini) {
     s.cardWidth = GetPrivateProfileIntW(L"popup", L"card_width", 300, ini);
     if (s.cardWidth < 230) s.cardWidth = 230;
     if (s.cardWidth > 400) s.cardWidth = 400;
+    s.cardMaxHeight =
+        GetPrivateProfileIntW(L"popup", L"card_max_height", 260, ini);
+    if (s.cardMaxHeight < 120) s.cardMaxHeight = 120;
+    if (s.cardMaxHeight > 400) s.cardMaxHeight = 400;
 
     s.virtualDesktops = (_wcsicmp(
         ReadStr(ini, L"windows", L"virtual_desktops", L"current_desktop")
@@ -272,6 +276,9 @@ void SaveSettings(const wchar_t* ini, const Settings& s) {
                                std::to_wstring(s.maxWidth).c_str(), ini);
     WritePrivateProfileStringW(L"popup", L"card_width",
                                std::to_wstring(s.cardWidth).c_str(), ini);
+    WritePrivateProfileStringW(L"popup", L"card_max_height",
+                               std::to_wstring(s.cardMaxHeight).c_str(),
+                               ini);
 
     WritePrivateProfileStringW(
         L"windows", L"virtual_desktops",

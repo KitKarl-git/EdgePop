@@ -170,6 +170,14 @@ const HelpEntry kHelp[] = {
       L"independent of the list width above. Bigger cards mean bigger "
       L"previews - the preview height grows with the width. Hard range "
       L"230-400." },
+    { IDC_QQ_CARDH,
+      L"The tallest a preview card may get.",
+      L"Max height\n\n"
+      L"Previews keep each window's real shape (wide windows get short "
+      L"cards, tall ones taller cards). This is the ceiling, so a "
+      L"portrait window cannot fill the whole popup - windows taller "
+      L"than this keep their shape but shrink to fit, with small side "
+      L"bars. Hard range 120-400." },
     { IDC_QQ_SHOW,
       L"What each popup row shows.",
       L"Row contents\n\n"
@@ -507,6 +515,7 @@ const SliderSpec kSliders[] = {
     // max width replaced it.
     { IDC_SL_TITLE, IDC_ED_TITLE, 120, 800, &Settings::maxWidth },
     { IDC_SL_CARDW, IDC_ED_CARDW, 230, 400, &Settings::cardWidth },   //
+    { IDC_SL_CARDH, IDC_ED_CARDH, 120, 400, &Settings::cardMaxHeight },
     { IDC_SL_TB_PSIZE, IDC_ED_TB_PSIZE, 5, 16, &Settings::persistentSize },
     { IDC_SL_TB_HSIZE, IDC_ED_TB_HSIZE, 5, 16, &Settings::hoverSize },
 };
@@ -1408,6 +1417,7 @@ const HugPair kHugs[] = {
     { IDC_LB_STAY,      IDC_QQ_STAY },
     { IDC_LB_TITLE,     IDC_QQ_TITLE },
     { IDC_LB_CARDW,     IDC_QQ_CARDW },
+    { IDC_LB_CARDH,     IDC_QQ_CARDH },
     { IDC_CK_THUMBS,    IDC_QQ_SHOW },
     { IDC_CK_PEEK,      IDC_QQ_PEEK },
     { IDC_CK_CLOSEBTN,  IDC_QQ_CLOSEBTN },
@@ -2044,6 +2054,7 @@ const int kEdgePopupDependentIds[] = {
     IDC_LB_STAY, IDC_QQ_STAY, IDC_SL_STAY, IDC_ED_STAY,
     IDC_LB_TITLE, IDC_QQ_TITLE, IDC_SL_TITLE, IDC_ED_TITLE,
     IDC_LB_CARDW, IDC_QQ_CARDW, IDC_SL_CARDW, IDC_ED_CARDW,
+    IDC_LB_CARDH, IDC_QQ_CARDH, IDC_SL_CARDH, IDC_ED_CARDH,
     IDC_CK_ICONS, IDC_CK_TITLES, IDC_CK_THUMBS, IDC_QQ_SHOW,
     IDC_CK_PEEK, IDC_QQ_PEEK,
     IDC_CK_CLOSEBTN, IDC_QQ_CLOSEBTN,

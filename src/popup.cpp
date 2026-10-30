@@ -93,13 +93,9 @@ constexpr float kMinCardW = 230.0f;    // preview cards need real width
 // the slot height grows with the card's inner width
 // (16:9, clamped) - wider cards mean bigger previews, not wider
 // letterbox bars.
-constexpr float kThumbSlotHMax = 260.0f;  // slot-height ceiling - a
-                                         // portrait window must not eat
-                                         // the popup (below it, slots are
-                                         // aspect-true; the old 16:9 slot
-                                         // letterboxed every other shape
-                                         // and the leftover bar read as
-                                         // the "gray bar", D-085)
+// Slot-height ceiling lives in settings (cardMaxHeight, default
+// 260): slots are aspect-true per window (D-085) and clamp there so a
+// portrait window cannot eat the popup.
 constexpr float kCardWMax = 400.0f;      // ceiling - 480 read too wide on
                                          // my desk; 400 keeps headroom
                                          // over the 300 default
@@ -1818,7 +1814,8 @@ float Popup::SlotHFor(const WindowItem& it, float popupW) const {
     if (aspect < 0.1) aspect = 16.0 / 9.0;    // degenerate guard
     if (aspect > 21.0) aspect = 21.0;         // sliver guard: h >= inner/21
     float h = static_cast<float>(inner / aspect);
-    const float hi = kThumbSlotHMax * scale_;
+    const float hi =
+        std::min(std::max(settings_.cardMaxHeight, 120u), 400u) * scale_;
     return h > hi ? hi : h;
 }
 

@@ -46,6 +46,7 @@ int main() {
     s.stayS = 6;
     s.maxWidth = 640;
     s.cardWidth = 380;                                   //
+    s.cardMaxHeight = 340;
     s.virtualDesktops = edgepop::VirtualDesktops::All;
     s.excludeApps = L"steam.exe, Discord.exe";
     s.activationEnabled = false;                       //
@@ -89,6 +90,7 @@ int main() {
     Check("stayS round-trips", t.stayS == 6);
     Check("maxWidth round-trips", t.maxWidth == 640);
     Check("cardWidth round-trips", t.cardWidth == 380);
+    Check("cardMaxHeight round-trips", t.cardMaxHeight == 340);
     Check("virtualDesktops round-trips",
           t.virtualDesktops == edgepop::VirtualDesktops::All);
     Check("excludeApps round-trips",
@@ -194,6 +196,7 @@ int main() {
     // at 10; arrow_size clamps 5-16.
     s.maxWidth = 0;
     s.cardWidth = 99;                                    //
+    s.cardMaxHeight = 99;
     s.reactivateDelayS = 99;
     s.stayS = 99;
     s.persistentSize = 99;
@@ -204,12 +207,17 @@ int main() {
           t.maxWidth == 120);
     Check("cardWidth=99 clamps to 230 on load",
           t.cardWidth == 230);
+    Check("cardMaxHeight=99 clamps to 120 on load",
+          t.cardMaxHeight == 120);
     // The upper clamp too, while the file is fresh.
     s.cardWidth = 9999;
+    s.cardMaxHeight = 9999;
     edgepop::SaveSettings(path, s);
     t = edgepop::LoadSettings(path);
     Check("cardWidth=9999 clamps to 400 on load",
           t.cardWidth == 400);
+    Check("cardMaxHeight=9999 clamps to 400 on load",
+          t.cardMaxHeight == 400);
     Check("reactivateDelayS=99 clamps to 10 on load", t.reactivateDelayS == 10);
     Check("stayS=99 clamps to 10 on load", t.stayS == 10);
     Check("persistentSize=99 clamps to 16 on load",
@@ -242,6 +250,8 @@ int main() {
     Check("missing keys: maxWidth defaults 420", t.maxWidth == 420);
     Check("missing keys: cardWidth defaults 300",
           t.cardWidth == 300);
+    Check("missing keys: cardMaxHeight defaults 260",
+          t.cardMaxHeight == 260);
     Check("missing keys: peek defaults true", t.peek == true);
     Check("missing keys: cardCloseButtons defaults true",
           t.cardCloseButtons == true);

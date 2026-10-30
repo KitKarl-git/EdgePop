@@ -10,7 +10,7 @@
 #include <winres.h>
 #include "resource.h"
 
-IDD_SETTINGS DIALOGEX 0, 0, 270, 509
+IDD_SETTINGS DIALOGEX 0, 0, 270, 525
 STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU |
     WS_THICKFRAME | WS_MAXIMIZEBOX | WS_VSCROLL
 EXSTYLE WS_EX_APPWINDOW
@@ -110,20 +110,25 @@ BEGIN
     CONTROL "", IDC_SL_CARDW, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
         95, 368, 120, 14
     EDITTEXT IDC_ED_CARDW, 221, 367, 30, 12, ES_RIGHT | ES_NUMBER
-    AUTOCHECKBOX "Show icons", IDC_CK_ICONS, 21, 386, 56, 10
-    AUTOCHECKBOX "Show titles", IDC_CK_TITLES, 81, 386, 58, 10
-    AUTOCHECKBOX "Thumbnails", IDC_CK_THUMBS, 159, 386, 60, 10
-    PUSHBUTTON "?", IDC_QQ_SHOW, 227, 384, 12, 11, BS_OWNERDRAW
-    AUTOCHECKBOX "Peek on hover", IDC_CK_PEEK, 21, 402, 74, 10
-    PUSHBUTTON "?", IDC_QQ_PEEK, 227, 400, 12, 11, BS_OWNERDRAW
-    AUTOCHECKBOX "Close buttons on cards", IDC_CK_CLOSEBTN, 120, 402, 90, 10
-    PUSHBUTTON "?", IDC_QQ_CLOSEBTN, 208, 400, 12, 11, BS_OWNERDRAW
+    LTEXT "Max height (px)", IDC_LB_CARDH, 21, 386, 64, 8
+    PUSHBUTTON "?", IDC_QQ_CARDH, 85, 384, 12, 11, BS_OWNERDRAW
+    CONTROL "", IDC_SL_CARDH, "msctls_trackbar32", WS_TABSTOP | TBS_HORZ,
+        95, 384, 120, 14
+    EDITTEXT IDC_ED_CARDH, 221, 383, 30, 12, ES_RIGHT | ES_NUMBER
+    AUTOCHECKBOX "Show icons", IDC_CK_ICONS, 21, 402, 56, 10
+    AUTOCHECKBOX "Show titles", IDC_CK_TITLES, 81, 402, 58, 10
+    AUTOCHECKBOX "Thumbnails", IDC_CK_THUMBS, 159, 402, 60, 10
+    PUSHBUTTON "?", IDC_QQ_SHOW, 227, 400, 12, 11, BS_OWNERDRAW
+    AUTOCHECKBOX "Peek on hover", IDC_CK_PEEK, 21, 418, 74, 10
+    PUSHBUTTON "?", IDC_QQ_PEEK, 227, 416, 12, 11, BS_OWNERDRAW
+    AUTOCHECKBOX "Close buttons on cards", IDC_CK_CLOSEBTN, 120, 418, 90, 10
+    PUSHBUTTON "?", IDC_QQ_CLOSEBTN, 208, 416, 12, 11, BS_OWNERDRAW
 
-    GROUPBOX "Windows", IDC_GB_WINDOWS, 14, 428, 242, 30
-    LTEXT "Virtual desktops", IDC_LB_VD, 21, 441, 72, 8
-    PUSHBUTTON "?", IDC_QQ_VD, 95, 439, 12, 11, BS_OWNERDRAW
-    AUTORADIOBUTTON "Current", IDC_RD_VD_CUR, 111, 440, 48, 10, WS_GROUP
-    AUTORADIOBUTTON "All", IDC_RD_VD_ALL, 181, 440, 36, 10
+    GROUPBOX "Windows", IDC_GB_WINDOWS, 14, 444, 242, 30
+    LTEXT "Virtual desktops", IDC_LB_VD, 21, 457, 72, 8
+    PUSHBUTTON "?", IDC_QQ_VD, 95, 455, 12, 11, BS_OWNERDRAW
+    AUTORADIOBUTTON "Current", IDC_RD_VD_CUR, 111, 456, 48, 10, WS_GROUP
+    AUTORADIOBUTTON "All", IDC_RD_VD_ALL, 181, 456, 36, 10
 
     // --- Taskbar arrows page ----------------------------------------------
     CONTROL "Activate arrows on taskbar", IDC_SW_ARROWS, "EdgePopSwitch",
@@ -172,12 +177,12 @@ BEGIN
 
     // --- shared bottom (never inside a page) -------------------------------
     CONTROL "Start with Windows", IDC_SW_STARTWIN, "EdgePopSwitch",
-        WS_TABSTOP, 14, 472, 170, 14
-    PUSHBUTTON "?", IDC_QQ_START, 190, 474, 12, 11, BS_OWNERDRAW
+        WS_TABSTOP, 14, 488, 170, 14
+    PUSHBUTTON "?", IDC_QQ_START, 190, 490, 12, 11, BS_OWNERDRAW
 
-    PUSHBUTTON "Advanced...", IDC_BTN_ADVANCED, 7, 490, 56, 14
-    PUSHBUTTON "Reset to defaults", IDC_BTN_RESET, 134, 490, 78, 14
-    DEFPUSHBUTTON "Close", IDOK, 216, 490, 45, 14
+    PUSHBUTTON "Advanced...", IDC_BTN_ADVANCED, 7, 506, 56, 14
+    PUSHBUTTON "Reset to defaults", IDC_BTN_RESET, 134, 506, 78, 14
+    DEFPUSHBUTTON "Close", IDOK, 216, 506, 45, 14
 END
 
 // About: icon, semibold name, version, the free-app line,

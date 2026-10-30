@@ -119,6 +119,8 @@
 #define IDC_CK_CLOSEBTN    1098   // per-card close buttons
 #define IDC_SL_CARDW       1099   // card width slider
 #define IDC_ED_CARDW       1101   // its numeric buddy (1100 is the pill ?)
+#define IDC_SL_CARDH       1231   // card max-height slider
+#define IDC_ED_CARDH       1232   // its numeric buddy
 
 // (?) help buttons: hover = tooltip, click = explanation window.
 // They are owner-drawn circles and are moved
@@ -157,6 +159,7 @@
 #define IDC_QQ_TB_HBG      1134
 #define IDC_QQ_CLOSEBTN    1135   // per-card close buttons
 #define IDC_QQ_CARDW       1136   // card width
+#define IDC_QQ_CARDH       1137   // card max height
 // The (?) next to the activation pill: one button, generic help.
 #define IDC_QQ_ACT         1100
 
@@ -175,6 +178,7 @@
 #define IDC_LB_GRACE       1216
 #define IDC_LB_TITLE       1217
 #define IDC_LB_CARDW       1230   // card width label
+#define IDC_LB_CARDH       1233   // card max-height label
 #define IDC_LB_REDELAY      1224
 #define IDC_LB_STAY       1225
 #define IDC_LB_EXCLUDE     1226
