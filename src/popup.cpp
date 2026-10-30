@@ -99,10 +99,10 @@ constexpr float kCardWMax = 400.0f;      // ceiling - 480 read too wide on
                                          // my desk; 400 keeps headroom
                                          // over the 300 default
 constexpr float kThumbStripH = 26.0f;
-constexpr float kCardPadY = 8.0f;        // above the preview slot
-constexpr float kCardPadBottom = 3.0f;   // under the title strip; 8+8
+constexpr float kCardPadY = 8.0f;        // above the title strip
+constexpr float kCardPadBottom = 3.0f;   // under the preview slot; 8+8
                                          // between cards read as dead
-                                         // space under the title
+                                         // space after the last row
 constexpr ULONGLONG kThumbDelayMs = 240;   // pop-in (220 ms) must settle
 // CaptureSnapshot caches a window only when at least this % of sampled
 // points over its bounds hit-test to the window itself.
@@ -1042,9 +1042,14 @@ int CacheMissingSnapshots(const std::vector<WindowItem>& items,
 
 // --- peek-on-hover ghosting ------------------------------------
 //
-// Taskbar-preview behavior: while an entry is hovered, every OTHER window
-// on that entry's monitor is hidden, leaving only the hovered window
-// visible on the desktop. Hiding = moving the window fully outside the
+// Taskbar-preview behavior: while an entry is hovered, the windows that
+// OCCLUDE it are hidden, leaving the hovered window revealed on the
+// desktop. D-079 narrows the set to occluders only (z-above AND
+// overlapping): windows below or beside the hovered one never covered
+// the peek, and parking them off-screen buys nothing but disturbance -
+// a video playing elsewhere on the monitor would go dark on the desktop
+// AND blank in its live card (Chromium pauses video in off-screen
+// windows). Hiding = moving the window fully outside the
 // virtual screen and restoring its exact rect afterwards - the only
 // cross-process hide that provably cannot damage a foreign renderer:
 // the app keeps rendering (the swapchain never notices a position
@@ -1087,25 +1092,47 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
     // in out of the virtual screen and back makes focus-recovery apps
     // (WeChat repro) re-assert themselves the moment a popup click
     // takes the foreground away - the switch bounces back within
-    // ~100 ms. It stays visible instead; every other window still
-    // hides, so peek degrades only when the window being left shares
-    // the hovered monitor.
+    // ~100 ms. It stays visible instead, so peek degrades only when
+    // the window being left covers the hovered one.
     const HWND fg = GetForegroundWindow();
     const int vsL = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    // Occluders only (D-079): the enumeration is topmost-first, so
+    // everything seen before `keep` sits ABOVE it; ghost such a window
+    // only when its rect overlaps the hovered window's. A MINIMIZED
+    // hovered window has no on-screen rect to test against - fall back
+    // to hiding all (the revealed desktop shows where it will restore).
+    RECT keepRc{};
+    const bool occludersOnly =
+        !IsIconic(keep) && GetWindowRect(keep, &keepRc) &&
+        keepRc.right > keepRc.left && keepRc.bottom > keepRc.top;
+    int ghosts = 0;
+    bool seenKeep = false;
     for (const auto& w : others) {
-        if (w.hwnd == keep || w.hwnd == fg || w.minimized ||
-            !IsWindow(w.hwnd))
+        if (w.hwnd == keep) {
+            seenKeep = true;
+            continue;
+        }
+        if (w.hwnd == fg || w.minimized || !IsWindow(w.hwnd))
             continue;
         RECT rc{};
         if (!GetWindowRect(w.hwnd, &rc)) continue;
+        if (occludersOnly) {
+            if (seenKeep) continue;   // below the hovered window
+            const RECT inter{ std::max(rc.left, keepRc.left),
+                              std::max(rc.top, keepRc.top),
+                              std::min(rc.right, keepRc.right),
+                              std::min(rc.bottom, keepRc.bottom) };
+            if (inter.right <= inter.left || inter.bottom <= inter.top)
+                continue;   // beside it - never covered the peek
+        }
         const int width = rc.right - rc.left;
-        // Fresh frame while the window is STILL on screen: the card
-        // freezes onto its still for the whole peek, and a stale one
-        // reads as the "gray overlay" complaint (D-077). Capture-time
-        // gate - hopping between cards must not re-capture the same
-        // windows every hop - and NEVER for a window this very call
-        // just restored: Chromium's video is still blank for a few
-        // hundred ms after restore, so that capture would freeze a
+        // Fresh frame while the window is STILL on screen: the still
+        // feeds the next popup's pop-in gap (and minimized cards), and
+        // a stale one reads as the "gray overlay" complaint (D-077).
+        // Capture-time gate - hopping between cards must not re-capture
+        // the same windows every hop - and NEVER for a window this very
+        // call just restored: Chromium's video is still blank for a few
+        // hundred ms after restore, so that capture would cache a
         // black video frame over a card that was just playing (the
         // "video disappearing is back" repro, D-078).
         const ULONGLONG nowTick = GetTickCount64();
@@ -1124,8 +1151,11 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
         if (SetWindowPos(w.hwnd, nullptr, vsL - width - 64, rc.top, 0, 0,
                          SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)) {
             g_ghosted.push_back({ w.hwnd, rc });
+            ++ghosts;
         }
     }
+    PLog(L"peek: %d occluder(s) of hwnd=0x%p hidden",
+         ghosts, keep);
 }
 
 // --- over-mode labels -------------------
@@ -1797,8 +1827,9 @@ void Popup::UpdateHover(int row) {
     Render();
 }
 
-// Peek-on-hover: the hovered entry's window stays visible,
-// every other window on its monitor hides until the hover moves on.
+// Peek-on-hover: the hovered entry's window stays visible and its
+// OCCLUDERS hide until the hover moves on; every card keeps its live
+// thumbnail throughout (D-079 - the still-freeze swap is gone).
 void Popup::UpdateHoverGhosting() {
     if (hoverRow_ >= 0 && hoverRow_ < static_cast<int>(rows_.size()) &&
         !rows_[hoverRow_].isHeader && rows_[hoverRow_].item >= 0) {
@@ -1807,7 +1838,6 @@ void Popup::UpdateHoverGhosting() {
     } else {
         UnghostAll();
     }
-    RetireGhostedThumbnails();
     // Re-register only once the pop-in has settled: DWM thumbnails
     // ignore the DComp scale animation and would composite FULL-SIZE
     // over the still-animating panel (Karl's slow-mo video, D-077).
@@ -2035,9 +2065,9 @@ void Popup::RegisterThumbnails() {
     for (auto& row : rows_) {
         if (row.isHeader || !row.card) continue;
         ++cards;
-        if (row.thumbLive) { ++live; continue; }   // kept live across a
-                                                   // partial re-register
-                                                   // (peek retire)
+        if (row.thumbLive) { ++live; continue; }   // a partial re-register
+                                                   // (scroll, peek) must
+                                                   // not double-register
         if (row.thumbSlot.right <= row.thumbSlot.left) continue;
         RECT slot = row.thumbSlot;
         if (slot.top < vTop) slot.top = vTop;
@@ -2049,11 +2079,12 @@ void Popup::RegisterThumbnails() {
             continue;   // DWM renders minimized sources blank;
                         // the snapshot card carries it
         }
-        if (IsGhosted(it.hwnd)) {
-            continue;   // peek parked it off-screen: its live content
-                        // degrades (Chromium blanks video) - the card
-                        // keeps the pre-peek still frame instead (D-076)
-        }
+        // Ghosted (peek-parked) windows keep their LIVE thumbnail
+        // (D-079): their card must never fall back to the cached still
+        // - the swap reads as low-res/gray next to the hovered card.
+        // Off-screen windows keep rendering; only Chromium-family video
+        // blanks, an accepted cost of the reveal, limited to windows
+        // that actually covered the hovered one (see GhostAllBut).
 
         HTHUMBNAIL th = nullptr;
         HRESULT hr = DwmRegisterThumbnail(hwnd_, it.hwnd, &th);
@@ -2104,34 +2135,6 @@ void Popup::UnregisterThumbnails() {
     thumbs_.clear();
     for (auto& row : rows_) row.thumbLive = false;
     thumbsPending_ = false;
-}
-
-// Peek transition: retire the live thumbnails of just-ghosted windows
-// so their cards fall back to the pre-peek still frame (a ghosted
-// window's live content degrades - off-screen Chromium blanks video -
-// and the frozen real frame beats a black one; D-076).
-void Popup::RetireGhostedThumbnails() {
-    if (thumbs_.empty()) return;
-    bool any = false;
-    for (auto it = thumbs_.begin(); it != thumbs_.end(); ) {
-        if (IsGhosted(it->first)) {
-            if (it->second) DwmUnregisterThumbnail(it->second);
-            it = thumbs_.erase(it);
-            any = true;
-        } else {
-            ++it;
-        }
-    }
-    if (!any) return;
-    for (auto& row : rows_) {
-        if (!row.thumbLive) continue;
-        const int idx = row.item;
-        if (idx >= 0 && idx < static_cast<int>(items_.size()) &&
-            IsGhosted(items_[idx].hwnd)) {
-            row.thumbLive = false;
-        }
-    }
-    Render();   // redraw the stills into the retired slots
 }
 
 void Popup::ApplyAnimStart() {
@@ -2347,8 +2350,9 @@ void Popup::Render() {
             const bool hot = static_cast<int>(r) == hoverRow_;
 
             if (row.card) {
-                // Thumbnail card: preview slot + title strip under it.
-                // Minimized windows keep the card too -
+                // Thumbnail card: title strip (icon + title + X) ABOVE
+                // the preview slot - the taskbar-flyout arrangement
+                // (D-079). Minimized windows keep the card too -
                 // DWM cannot render them live, so their slot
                 // shows the last-known snapshot (taskbar behavior) with
                 // the icon placeholder behind it. The accent border (not
@@ -2356,10 +2360,12 @@ void Popup::Render() {
                 // composites the preview.
                 //
                 // Per-card close: the button rides the title strip
-                // below the slot, flush right - a live DWM thumbnail
+                // above the slot, flush right - a live DWM thumbnail
                 // composites above everything, so the X must sit outside
-                // the preview pixels (drawn with the strip, below).
-                const float slotTop = top + kCardPadY * scale_;
+                // the preview pixels (drawn with the strip, above it).
+                const float sH = strip ? kThumbStripH * scale_ : 0.0f;
+                const float sTop = top + kCardPadY * scale_;
+                const float slotTop = sTop + sH;
                 const float slotL = pad;
                 const float slotR = static_cast<float>(w) - pad;
                 const float slotB = slotTop + slotH;
@@ -2427,14 +2433,6 @@ void Popup::Render() {
                     }
                 }
                 if (strip) {
-                    const float sTop = slotB;
-                    const float sH = kThumbStripH * scale_;
-                    // The strip content centers in strip + bottom pad,
-                    // not the strip alone: kCardPadBottom is
-                    // panel-colored, so the eye counts it as space below
-                    // the row - strip-only centering reads top-heavy
-                    // (bottom gap looks bigger than the top one).
-                    const float opt = kCardPadBottom * scale_ / 2.0f;
                     if (hot && g_hover) {
                         g_ctx->FillRectangle(
                             D2D1::RectF(0, sTop, static_cast<float>(w),
@@ -2444,7 +2442,7 @@ void Popup::Render() {
                     float textLeft = pad;
                     if (settings_.showIcons && item.icon) {
                         const float si = 20.0f * scale_;
-                        const float iy = sTop + (sH - si) / 2 + opt;
+                        const float iy = sTop + (sH - si) / 2;
                         ID2D1Bitmap* iconBmp =
                             CardIconFor(item,
                                         static_cast<UINT>(si + 0.5f));
@@ -2466,8 +2464,7 @@ void Popup::Render() {
                         const float cs = kCardXSz * scale_;
                         const float cx0 =
                             static_cast<float>(w) - pad - cs;
-                        const float cy0 =
-                            sTop + (sH - cs) / 2.0f + opt;
+                        const float cy0 = sTop + (sH - cs) / 2.0f;
                         row.xCard = {
                             static_cast<LONG>(cx0 - 2.0f * scale_),
                             static_cast<LONG>(cy0 - 2.0f * scale_),
@@ -2524,11 +2521,11 @@ void Popup::Render() {
                                 xg.Get(), 1.8f * scale_,
                                 g_roundCap.Get());
                         }
-                        drawTitle(item, textLeft, sTop + opt, sH, false,
+                        drawTitle(item, textLeft, sTop, sH, false,
                                   cs + kCardXGap * scale_);
                     } else {
                         row.xCard = {};
-                        drawTitle(item, textLeft, sTop + opt, sH);
+                        drawTitle(item, textLeft, sTop, sH);
                     }
                 } else {
                     row.xCard = {};

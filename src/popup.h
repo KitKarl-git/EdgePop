@@ -15,26 +15,27 @@
 // the cursor last was inside - regardless of which side of the seam the
 // cursor stopped on (fixes the neighbor-side instant-close bug).
 //
-// Live DWM thumbnails (phase 5): window rows render as cards (preview slot
-// + title strip). Thumbnails are registered only while the popup is visible
-// and only after the pop-in settles - the compositor animation does not move
-// DWM-composited thumbnails - and the swapchain punches transparent holes
-// (PRIMITIVE_BLEND_MIN) where they land. Minimized windows and failed
-// registrations keep the classic icon+title row/slot placeholder. With
-// "labels over previews" the preview region stops just above the label
-// (DWM thumbnails composite above EVERY window, so
-// nothing can be drawn over a live preview); the label sits unfilled at
-// the preview's bottom edge.
+// Live DWM thumbnails (phase 5): window rows render as cards - a title
+// strip (icon + title + per-card close) ABOVE the preview slot, the
+// native taskbar-flyout arrangement (D-079). Thumbnails are registered
+// only while the popup is visible and only after the pop-in settles -
+// the compositor animation does not move DWM-composited thumbnails -
+// and the swapchain punches transparent holes (PRIMITIVE_BLEND_MIN)
+// where they land. Minimized windows and failed registrations keep the
+// snapshot/icon placeholder. A live DWM thumbnail composites above
+// EVERY window, so nothing can be drawn over the preview (gotcha 18).
 //
 // Close affordances: the popup's own close is a square tab that
-// PROTRUDES above the panel's top edge - clearly chrome, never part of a
-// card. Each card's close is a small rounded-square X riding the title
-// strip at
-// its far right, in line with the icon and app name (taskbar-flyout
-// style) - a live DWM thumbnail composites above every window (gotcha
-// 18), so the X must sit outside the preview pixels; the title
-// ellipsizes short of it. Clicking it WM_CLOSEs that window and the
-// popup rebuilds in place.
+// PROTRUDES above the panel's top edge - clearly chrome, never part of
+// a card. Each card's close is a small rounded-square X riding the
+// title strip's far right, in line with the icon and app name
+// (taskbar-flyout style) - the strip sits outside the preview pixels;
+// the title ellipsizes short of it. Clicking it WM_CLOSEs that window
+// and the popup rebuilds in place.
+//
+// Peek-on-hover keeps every card's thumbnail LIVE while the hovered
+// window's occluders are parked off-screen (D-079) - non-hovered cards
+// never fall back to their cached stills.
 #pragma once
 
 #include <windows.h>
@@ -151,8 +152,7 @@ private:
     void StartAnimation();          // compositor-driven pop-out
     void RegisterThumbnails();      // live previews, after the pop-in settles
     void UnregisterThumbnails();
-    void RetireGhostedThumbnails(); // peek: ghosted windows fall back to stills
-    void UpdateHoverGhosting();     // peek-on-hover: hide the others
+    void UpdateHoverGhosting();     // peek-on-hover: hide the occluders
     void VerifyForeground();        // deferred switch check
 
     HWND hwnd_ = nullptr;
