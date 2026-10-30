@@ -406,8 +406,11 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
             ++probes;
         }
     }
-    if (probes == 0 || hits * 100 < probes * kSnapshotMinVisiblePct)
+    if (probes == 0 || hits * 100 < probes * kSnapshotMinVisiblePct) {
+        PLog(L"snapshot: skip hwnd=0x%p - occluded (%d%% of probes hit)",
+             src, probes ? hits * 100 / probes : 0);
         return nullptr;
+    }
 
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
