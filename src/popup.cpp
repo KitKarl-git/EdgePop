@@ -1049,7 +1049,9 @@ int CacheMissingSnapshots(const std::vector<WindowItem>& items,
 // the peek, and parking them off-screen buys nothing but disturbance -
 // a video playing elsewhere on the monitor would go dark on the desktop
 // AND blank in its live card (Chromium pauses video in off-screen
-// windows - at ANY on-screen sliver, probed to 256 px, D-080).
+// windows - at ANY on-screen sliver, probed to 256 px, D-080). D-081:
+// Chromium-family windows are excluded from parking ENTIRELY - see the
+// skip in the loop.
 // Hiding = moving the window fully outside
 // the virtual screen, then restoring its exact rect afterwards - the only
 // cross-process hide that provably cannot damage a foreign renderer:
@@ -1107,6 +1109,7 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
         !IsIconic(keep) && GetWindowRect(keep, &keepRc) &&
         keepRc.right > keepRc.left && keepRc.bottom > keepRc.top;
     int ghosts = 0;
+    int chromiumSkips = 0;
     bool seenKeep = false;
     for (const auto& w : others) {
         if (w.hwnd == keep) {
@@ -1115,6 +1118,20 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
         }
         if (w.hwnd == fg || w.minimized || !IsWindow(w.hwnd))
             continue;
+        // Chromium-family windows (Chrome/Edge/Brave/Electron - the
+        // window class is the giveaway, no process sniffing) are NEVER
+        // parked (D-081): their renderers pause for hidden/off-screen
+        // windows at ANY on-screen sliver (probed, D-080), so parking
+        // one freezes its card AND yanks a playing video off the
+        // desktop. They stay up and keep playing in their live card;
+        // peek degrades only for windows they cover - those keep their
+        // live card previews, which show the same content anyway.
+        wchar_t cls[64];
+        if (GetClassNameW(w.hwnd, cls, 64) > 0 &&
+            wcscmp(cls, L"Chrome_WidgetWin_1") == 0) {
+            ++chromiumSkips;
+            continue;
+        }
         RECT rc{};
         if (!GetWindowRect(w.hwnd, &rc)) continue;
         if (occludersOnly) {
@@ -1159,8 +1176,9 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
             ++ghosts;
         }
     }
-    PLog(L"peek: %d occluder(s) of hwnd=0x%p hidden",
-         ghosts, keep);
+    PLog(L"peek: %d occluder(s) of hwnd=0x%p hidden, %d chromium "
+         L"window(s) left on screen",
+         ghosts, keep, chromiumSkips);
 }
 
 // --- over-mode labels -------------------

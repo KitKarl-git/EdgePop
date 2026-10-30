@@ -33,12 +33,13 @@
 // the title ellipsizes short of it. Clicking it WM_CLOSEs that window
 // and the popup rebuilds in place.
 //
-// Peek-on-hover hides only the hovered window's occluders (D-079):
-// cards of windows that were never ghosted stay fully live, and the
-// ghosted cards freeze on their FRESH pre-peek stills (captured the
-// moment the hover started) - a parked Chromium-family renderer pauses
-// no matter how much of it stays on-screen (probed to 256 px, D-080),
-// so a frozen real frame beats the frozen-or-black live thumb.
+// Peek-on-hover hides the hovered window's occluders (D-079) EXCEPT
+// Chromium-family windows (class Chrome_WidgetWin_1) - never parked
+// (D-081): their renderers pause off-screen at any sliver (probed to
+// 256 px, D-080), so parking one would freeze its card and yank a
+// playing video off the desktop. Browser windows stay up and keep
+// playing in their live cards; a parked non-Chromium occluder freezes
+// its card on its fresh pre-peek still.
 #pragma once
 
 #include <windows.h>
