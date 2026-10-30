@@ -66,6 +66,9 @@ struct PopupSection {
 // observability for the icon-placeholder gap (logged in debug builds).
 int CountCachedSnapshots(const std::vector<PopupSection>& sections);
 
+// Does this window have a cached snapshot? (startup warm-up scheduler)
+bool HasCachedSnapshot(HWND hwnd);
+
 class Popup {
 public:
     static Popup& Instance();

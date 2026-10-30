@@ -24,6 +24,7 @@
 #include <tlhelp32.h>   // single-instance zombie sweep
 
 #include <string>
+#include <set>
 #include <vector>
 #include <algorithm>   // std::sort for chain-mode sections
 #include <mutex>       // Log() is called from the main thread and the
@@ -186,6 +187,33 @@ void ApplyStripVisibility(HWND hwnd) {
 // forward: section builder for the popup (defined after FireHover)
 std::vector<edgepop::PopupSection> BuildSections(
     const edgepop::Segment& seg);
+
+// Startup snapshot warm-up (D-073): one uncached neighbor window per
+// tick - the WGC fallback costs ~30-60 ms per window, and spacing the
+// captures keeps the startup splash painting. Each window is tried at
+// most once (failures never block the queue); bounded overall.
+constexpr UINT kSnapWarmupTimerId = 0x7A70;   // gotcha 22: 1/2/0x7A5E taken
+constexpr size_t kSnapWarmupMaxWindows = 16;
+std::set<HWND> g_snapWarmupTried;
+
+void SnapWarmupTick(HWND hwnd) {
+    for (const auto& seg : g_segments) {
+        for (const auto& s : BuildSections(seg)) {
+            for (const auto& it : s.items) {
+                if (g_snapWarmupTried.count(it.hwnd)) continue;
+                g_snapWarmupTried.insert(it.hwnd);
+                if (it.minimized || !it.hwnd) continue;   // no live surface
+                if (edgepop::HasCachedSnapshot(it.hwnd)) continue;
+                edgepop::CacheWindowSnapshot(it.hwnd);
+                if (g_snapWarmupTried.size() >= kSnapWarmupMaxWindows) {
+                    KillTimer(hwnd, kSnapWarmupTimerId);
+                }
+                return;   // one capture attempt per tick
+            }
+        }
+    }
+    KillTimer(hwnd, kSnapWarmupTimerId);   // every candidate warmed/tried
+}
 
 void FireHover(size_t idx) {
     if (idx >= g_segments.size()) return;
@@ -695,6 +723,8 @@ LRESULT CALLBACK MsgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (wp == kIniSaveTimerId) {
                 KillTimer(hwnd, kIniSaveTimerId);
                 edgepop::SaveSettings(g_iniPath, g_settings);
+            } else if (wp == kSnapWarmupTimerId) {
+                SnapWarmupTick(hwnd);
             }
             return 0;
         case WM_DISPLAYCHANGE:
@@ -916,6 +946,12 @@ int WINAPI wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE,
         RegisterWindowMessageW(L"TaskbarCreated");   // explorer restarts
     TrayAdd();
     Rebuild(L"startup");
+    // Warm the snapshot cache (D-073): occluded never-touched windows get
+    // their WGC capture now, so even the FIRST popup of the session opens
+    // with real images instead of icon placeholders.
+    if (g_settings.thumbnails) {
+        SetTimer(g_hwndMsg, kSnapWarmupTimerId, 200, nullptr);
+    }
     g_trigger.Install(g_hwndMsg, OnZoneFire, GetDwellMs);
     g_trigger.SetMouseDownHandler(OnAnyMouseDown);
     g_trigger.SetMouseMoveHandler(OnMouseMove);

@@ -52,6 +52,7 @@ target_link_libraries(EdgePop PRIVATE
     comdlg32    # ChooseColor
     ole32       # CoInitializeEx / IVirtualDesktopManager
     uiautomationcore   # taskbar monitor indicators
+    windowsapp   # RoGetActivationFactory: WGC snapshot fallback (D-073)
     d2d1 d3d11 dxgi dcomp dwrite)   # popup renderer (system DLLs)
 
 # The manifest is embedded from src/version.rc; suppress the linker's own.

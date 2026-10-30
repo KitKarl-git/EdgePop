@@ -20,6 +20,19 @@
 #include <functional>
 #include <set>
 
+// Windows.Graphics.Capture one-shot fallback (D-073). cppwinrt is
+// header-only and throws - every use site below catches, so no exception
+// ever escapes into a window proc. All OS components (combase), no new
+// DLLs; gated on build 20348+ (border-off floor, see CaptureSnapshotWGC).
+#include <winrt/Windows.Foundation.h>   // IClosable::Close et al (must lead)
+#include <winrt/Windows.Graphics.Capture.h>
+#include <winrt/Windows.Graphics.DirectX.h>
+#include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+#include <Windows.Graphics.Capture.Interop.h>
+#include <windows.graphics.directx.direct3d11.interop.h>
+
+#include "osver.h"
+
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -27,6 +40,7 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "windowsapp.lib")   // RoGetActivationFactory (WGC)
 
 namespace edgepop {
 namespace {
@@ -424,6 +438,224 @@ void PruneSnapshotCache() {
     }
 }
 
+// Shared tail of both capture paths: quality-guard raw BGRA pixels and
+// wrap them in a D2D bitmap. Blank/teardown garbage - an all-zero frame,
+// a white tile, the black ghost of a torn-down surface, or the pure-black
+// frame DRM apps emit under Windows.Graphics.Capture - must never
+// displace a good snapshot or a clean placeholder. Real window content
+// always has mid-tones (text antialiasing, colors); junk is extremes.
+ComPtr<ID2D1Bitmap> GuardedBitmapFromPixels(const void* bits, int w, int h) {
+    if (!g_ctx || !bits || w <= 0 || h <= 0) return nullptr;
+    bool anyContent = false;
+    long midTones = 0, samples = 0;
+    const DWORD* px = static_cast<const DWORD*>(bits);
+    const int step = w > 4 ? w / 4 : 1;   // sample ~4 columns of rows
+    for (int y = 0; y < h; y += 8) {
+        for (int x = 0; x < w; x += step) {
+            const DWORD p = px[y * w + x];
+            const int r = static_cast<int>(p & 0xFF);
+            const int g2 = static_cast<int>((p >> 8) & 0xFF);
+            const int b = static_cast<int>((p >> 16) & 0xFF);
+            const int lum = (r * 30 + g2 * 59 + b * 11) / 100;
+            if (lum > 6 && lum < 247) ++midTones;
+            if ((p & 0x00FFFFFF) != 0) anyContent = true;
+            ++samples;
+        }
+    }
+    const bool enoughMidTones =
+        samples == 0 || midTones * 100 >= samples * 4;   // >= 4 %
+    if (!anyContent || !enoughMidTones) return nullptr;
+    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+        D2D1_PIXEL_FORMAT{ DXGI_FORMAT_B8G8R8A8_UNORM,
+                           D2D1_ALPHA_MODE_PREMULTIPLIED });
+    ComPtr<ID2D1Bitmap> bmp;
+    g_ctx->CreateBitmap(D2D1_SIZE_U{ static_cast<UINT>(w),
+                                     static_cast<UINT>(h) },
+                        bits, static_cast<UINT>(w) * 4, props, &bmp);
+    return bmp;
+}
+
+// --- Windows.Graphics.Capture one-shot fallback (D-073) ----------------
+//
+// The screen-read path above cannot see a window another window covers,
+// so a window that lives buried under a maximized one only ever cached
+// when its user brought it to the foreground - until then its card
+// showed the icon placeholder (Karl: "icon first, every time, until I
+// interact with the window"). Windows.Graphics.Capture reads the
+// window's OWN composed surface through the occluder - no message ever
+// enters the target (same safety class as DWM thumbnails; PrintWindow is
+// banned, gotcha 27). Probe-verified on this machine (purple form under
+// a full gray cover reads back exact purple, 30 ms, border off).
+//
+// Constraints: borderless sessions require build 20348+ (below that the
+// system paints a yellow frame around the captured window for the
+// session's lifetime - a flashing artifact we will never ship, so the
+// whole path disables itself); one-shot sessions cost ~30-60 ms, spent
+// only when the screen path refused an occluded window (popup close,
+// warm-up tick - never in a hook); DRM-blacked frames die in the shared
+// quality guard. cppwinrt throws - the blanket catch keeps every
+// exception inside this function.
+bool g_wgcBroken = false;   // OS floor / border denied / factory gone
+winrt::com_ptr<ID3D11Device> g_wgcDev;
+winrt::com_ptr<ID3D11DeviceContext> g_wgcCtx;
+winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice
+    g_wgcDeviceWrap{ nullptr };
+
+bool EnsureWgcDevice() {
+    if (g_wgcDev) return true;
+    ID3D11Device* raw = nullptr;
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+                                 D3D11_SDK_VERSION, &raw, nullptr, nullptr))) {
+        return false;
+    }
+    g_wgcDev.attach(raw);
+    ID3D11DeviceContext* rawCtx = nullptr;
+    g_wgcDev->GetImmediateContext(&rawCtx);
+    g_wgcCtx.copy_from(rawCtx);
+    winrt::com_ptr<IDXGIDevice> dxgiDev;
+    g_wgcDev.as(dxgiDev);
+    winrt::com_ptr<::IInspectable> insp;
+    if (FAILED(CreateDirect3D11DeviceFromDXGIDevice(dxgiDev.get(),
+                                                    insp.put()))) {
+        g_wgcCtx = nullptr;
+        g_wgcDev = nullptr;
+        return false;
+    }
+    g_wgcDeviceWrap = insp.as<
+        winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice>();
+    return true;
+}
+
+ComPtr<ID2D1Bitmap> CaptureSnapshotWGC(HWND src) {
+    if (g_wgcBroken || !g_ctx || !IsWindow(src) || IsIconic(src)) return nullptr;
+    if (OsBuildNumber() < 20348) {   // border-off floor: no yellow flashes
+        g_wgcBroken = true;
+        PLog(L"snapshot: wgc off - OS build below 20348");
+        return nullptr;
+    }
+    try {
+        if (!EnsureWgcDevice()) {
+            PLog(L"snapshot: wgc device failed");
+            return nullptr;
+        }
+        namespace wgc = winrt::Windows::Graphics::Capture;
+        namespace dx = winrt::Windows::Graphics::DirectX;
+        auto factory = winrt::get_activation_factory<wgc::GraphicsCaptureItem>();
+        auto interop = factory.as<IGraphicsCaptureItemInterop>();
+        wgc::GraphicsCaptureItem item{ nullptr };
+        winrt::check_hresult(interop->CreateForWindow(
+            src, winrt::guid_of<wgc::IGraphicsCaptureItem>(),
+            winrt::put_abi(item)));
+
+        auto pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
+            g_wgcDeviceWrap, dx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            2, item.Size());
+        auto session = pool.CreateCaptureSession(item);
+        try {
+            session.IsBorderRequired(false);
+            session.IsCursorCaptureEnabled(false);
+        } catch (const winrt::hresult_error&) {
+            // Border cannot be disabled here: a session would flash a
+            // yellow frame on screen - disqualify the path for good.
+            g_wgcBroken = true;
+            session.Close();
+            pool.Close();
+            PLog(L"snapshot: wgc off - border cannot be disabled");
+            return nullptr;
+        }
+
+        session.StartCapture();
+        wgc::Direct3D11CaptureFrame frame{ nullptr };
+        for (int i = 0; i < 100 && !frame; ++i) {
+            frame = pool.TryGetNextFrame();
+            if (!frame) Sleep(5);
+        }
+        if (!frame) {
+            session.Close();
+            pool.Close();
+            PLog(L"snapshot: wgc fail hwnd=0x%p - no frame in 500 ms", src);
+            return nullptr;
+        }
+
+        winrt::com_ptr<ID3D11Texture2D> tex;
+        {
+            auto access = frame.Surface().as<
+                ::Windows::Graphics::DirectX::Direct3D11::
+                    IDirect3DDxgiInterfaceAccess>();
+            winrt::check_hresult(access->GetInterface(
+                __uuidof(ID3D11Texture2D),
+                reinterpret_cast<void**>(tex.put())));
+        }
+        D3D11_TEXTURE2D_DESC desc{};
+        tex->GetDesc(&desc);
+        D3D11_TEXTURE2D_DESC st = desc;
+        st.Usage = D3D11_USAGE_STAGING;
+        st.BindFlags = 0;
+        st.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        st.MiscFlags = 0;
+        winrt::com_ptr<ID3D11Texture2D> staging;
+        {
+            ID3D11Texture2D* rawSt = nullptr;
+            if (FAILED(g_wgcDev->CreateTexture2D(&st, nullptr, &rawSt))) {
+                session.Close();
+                pool.Close();
+                return nullptr;
+            }
+            staging.attach(rawSt);
+        }
+        g_wgcCtx->CopyResource(staging.get(), tex.get());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(g_wgcCtx->Map(staging.get(), 0, D3D11_MAP_READ, 0,
+                                 &mapped))) {
+            session.Close();
+            pool.Close();
+            return nullptr;
+        }
+        // Box-average downscale into a kSnapshotMaxW-wide buffer, then
+        // through the shared guard (same memory bound as the screen
+        // path).
+        const int fw = static_cast<int>(desc.Width);
+        const int fh = static_cast<int>(desc.Height);
+        const int tw = fw > kSnapshotMaxW ? kSnapshotMaxW : fw;
+        const int th = tw * fh / fw;
+        std::vector<DWORD> scaled(static_cast<size_t>(tw) * th);
+        for (int y = 0; y < th; ++y) {
+            const int y0 = y * fh / th, y1 = (y + 1) * fh / th;
+            for (int x = 0; x < tw; ++x) {
+                const int x0 = x * fw / tw, x1 = (x + 1) * fw / tw;
+                unsigned long long r = 0, g2 = 0, b2 = 0, n = 0;
+                for (int sy = y0; sy < y1; ++sy) {
+                    const DWORD* row = reinterpret_cast<const DWORD*>(
+                        static_cast<const BYTE*>(mapped.pData) +
+                        sy * static_cast<int>(mapped.RowPitch));
+                    for (int sx = x0; sx < x1; ++sx) {
+                        r += row[sx] & 0xFF;
+                        g2 += (row[sx] >> 8) & 0xFF;
+                        b2 += (row[sx] >> 16) & 0xFF;
+                        ++n;
+                    }
+                }
+                scaled[static_cast<size_t>(y) * tw + x] =
+                    n ? static_cast<DWORD>((r / n) | ((g2 / n) << 8) |
+                                           ((b2 / n) << 16))
+                      : 0;
+            }
+        }
+        g_wgcCtx->Unmap(staging.get(), 0);
+        session.Close();
+        pool.Close();
+        return GuardedBitmapFromPixels(scaled.data(), tw, th);
+    } catch (const winrt::hresult_error& e) {
+        PLog(L"snapshot: wgc fail hwnd=0x%p hr=0x%08X", src,
+             static_cast<unsigned>(e.code().value));
+        return nullptr;
+    } catch (...) {
+        PLog(L"snapshot: wgc fail hwnd=0x%p - unknown", src);
+        return nullptr;
+    }
+}
+
 ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     RECT rc{};
     // Extended frame bounds = the visible window, shadow excluded;
@@ -456,9 +688,20 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
         }
     }
     if (probes == 0 || hits * 100 < probes * kSnapshotMinVisiblePct) {
-        PLog(L"snapshot: skip hwnd=0x%p - occluded (%d%% of probes hit)",
-             src, probes ? hits * 100 / probes : 0);
-        return nullptr;
+        // The screen cannot show this window right now, but the window
+        // still has its own surface - WGC reads it through the occluder
+        // (D-073). nullptr keeps the previous good cache entry on WGC
+        // failure (unbuildable below 20348, border denied, DRM-black).
+        const int pct = probes ? hits * 100 / probes : 0;
+        ComPtr<ID2D1Bitmap> b = CaptureSnapshotWGC(src);
+        if (b) {
+            PLog(L"snapshot: cache hwnd=0x%p via WGC (occluded, %d%% probes)",
+                 src, pct);
+        } else {
+            PLog(L"snapshot: skip hwnd=0x%p - occluded (%d%% of probes hit)",
+                 src, pct);
+        }
+        return b;
     }
 
     // Downscale to card-slot resolution at capture time (kSnapshotMaxW):
@@ -494,40 +737,7 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     if (screen) ReleaseDC(nullptr, screen);
 
     ComPtr<ID2D1Bitmap> bmp;
-    if (ok) {
-        // Quality guard: blank/teardown garbage - an
-        // all-zero frame, a white tile, or the black-with-a-white-bar
-        // ghost of a surface captured after the minimize completed -
-        // must not displace a good snapshot or a clean placeholder.
-        // Real window content always has mid-tones (text antialiasing,
-        // colors); junk frames are pure extremes.
-        bool anyContent = false;
-        long midTones = 0, samples = 0;
-        const DWORD* px = static_cast<const DWORD*>(bits);
-        const int step = dw > 4 ? dw / 4 : 1;   // sample ~4 columns of rows
-        for (int y = 0; y < dh; y += 8) {
-            for (int x = 0; x < dw; x += step) {
-                const DWORD p = px[y * dw + x];
-                const int r = static_cast<int>(p & 0xFF);
-                const int g2 = static_cast<int>((p >> 8) & 0xFF);
-                const int b = static_cast<int>((p >> 16) & 0xFF);
-                const int lum = (r * 30 + g2 * 59 + b * 11) / 100;
-                if (lum > 6 && lum < 247) ++midTones;
-                if ((p & 0x00FFFFFF) != 0) anyContent = true;
-                ++samples;
-            }
-        }
-        const bool enoughMidTones =
-            samples == 0 || midTones * 100 >= samples * 4;   // >= 4 %
-        if (anyContent && enoughMidTones) {
-            D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-                D2D1_PIXEL_FORMAT{ DXGI_FORMAT_B8G8R8A8_UNORM,
-                                   D2D1_ALPHA_MODE_PREMULTIPLIED });
-            g_ctx->CreateBitmap(D2D1_SIZE_U{ static_cast<UINT>(dw),
-                                             static_cast<UINT>(dh) },
-                                bits, static_cast<UINT>(dw) * 4, props, &bmp);
-        }
-    }
+    if (ok) bmp = GuardedBitmapFromPixels(bits, dw, dh);
     DeleteObject(dib);
     if (bmp) {
         PLog(L"snapshot: cache hwnd=0x%p (%d%% visible)", src,
@@ -667,6 +877,10 @@ int CountCachedSnapshots(const std::vector<PopupSection>& sections) {
         }
     }
     return n;
+}
+
+bool HasCachedSnapshot(HWND hwnd) {
+    return hwnd && g_snapCache.count(hwnd) != 0;
 }
 
 void Popup::SetLogSink(void (*fn)(const wchar_t*)) { g_logSink = fn; }
