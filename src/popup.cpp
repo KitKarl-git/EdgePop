@@ -640,13 +640,26 @@ ComPtr<ID2D1Bitmap> GuardedBitmapFromPixels(const void* bits, int w, int h) {
     const bool enoughMidTones =
         samples == 0 || midTones * 100 >= samples * 4;   // >= 4 %
     if (!anyContent || !enoughMidTones) return nullptr;
+    // Force the alpha channel OPAQUE. The bitmap is created
+    // PREMULTIPLIED, and the source pixels arrive with alpha 0: GDI's
+    // HALFTONE StretchBlt writes only RGB (unlike plain BitBlt, which
+    // copies DWM's alpha 255), and the WGC scaler builds its pixels
+    // without any alpha bits. rgb>0 with a=0 is invalid premultiplied
+    // data and D2D composites it ADDITIVELY - the still lands as
+    // content + whatever is drawn under it (the ~30-gray slot), washing
+    // every snapshot out. Measured on the flat-#808080 probe: slot read
+    // 158 = 128 + 30 (D-082, the "gray thumbnails" complaint).
+    std::vector<DWORD> opaque(static_cast<size_t>(w) * h);
+    memcpy(opaque.data(), bits, opaque.size() * 4);
+    for (DWORD& p : opaque) p |= 0xFF000000;
     D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
         D2D1_PIXEL_FORMAT{ DXGI_FORMAT_B8G8R8A8_UNORM,
                            D2D1_ALPHA_MODE_PREMULTIPLIED });
     ComPtr<ID2D1Bitmap> bmp;
     g_ctx->CreateBitmap(D2D1_SIZE_U{ static_cast<UINT>(w),
                                      static_cast<UINT>(h) },
-                        bits, static_cast<UINT>(w) * 4, props, &bmp);
+                        opaque.data(), static_cast<UINT>(w) * 4, props,
+                        &bmp);
     return bmp;
 }
 
