@@ -35,7 +35,9 @@
 //
 // Peek-on-hover keeps every card's thumbnail LIVE while the hovered
 // window's occluders are parked off-screen (D-079) - non-hovered cards
-// never fall back to their cached stills.
+// never fall back to their cached stills. The parked windows keep a
+// 4 px sliver on-screen (D-080) so Chromium-family renderers never see
+// "hidden" and video keeps playing in the flesh and in its card.
 #pragma once
 
 #include <windows.h>

@@ -871,7 +871,8 @@ ComPtr<ID2D1Bitmap> CaptureSnapshotWGC(HWND src) {
 }
 
 // Peek ghosting (see the block below): the moved-window set, declared
-// early because CaptureSnapshot must refuse windows parked off-screen.
+// early because CaptureSnapshot must refuse windows parked off-screen
+// (they keep only a sliver on-screen, D-080 - never capture one).
 struct Ghosted {
     HWND hwnd;
     RECT rc;    // exact pre-move rect
@@ -1049,8 +1050,11 @@ int CacheMissingSnapshots(const std::vector<WindowItem>& items,
 // the peek, and parking them off-screen buys nothing but disturbance -
 // a video playing elsewhere on the monitor would go dark on the desktop
 // AND blank in its live card (Chromium pauses video in off-screen
-// windows). Hiding = moving the window fully outside the
-// virtual screen and restoring its exact rect afterwards - the only
+// windows). Hiding = moving the window outside the
+// virtual screen except a 4 px sliver (D-080: a fully-off-screen
+// window counts as hidden and Chromium-family renderers pause -
+// video blanks; any visible region keeps them running), then
+// restoring its exact rect afterwards - the only
 // cross-process hide that provably cannot damage a foreign renderer:
 // the app keeps rendering (the swapchain never notices a position
 // change), its DWM thumbnail stays alive and the taskbar button stays.
@@ -1146,9 +1150,20 @@ void GhostAllBut(HWND keep, VirtualDesktops vd) {
                     SnapEntry{ std::move(fresh), nowTick, nowTick };
             }
         }
-        // Fully left of the virtual screen, unchanged top: same monitor
-        // order, minimal surprise on restore.
-        if (SetWindowPos(w.hwnd, nullptr, vsL - width - 64, rc.top, 0, 0,
+        // Parked left of the virtual screen with a small SLIVER still
+        // on the leftmost monitor (D-080): a window pushed FULLY
+        // outside the virtual screen counts as hidden, and
+        // Chromium-family renderers react to "hidden" by pausing the
+        // compositor - video in the parked browser goes black and its
+        // live card blacks out with it (Karl: "the video still blacks
+        // out and it's not playing"). ANY visible region keeps the
+        // renderer running, and a few px at the outer screen edge are
+        // invisible in practice - no seam and no taskbar live there.
+        // Unchanged top: same monitor order, minimal surprise on
+        // restore.
+        constexpr int kGhostSliverPx = 4;
+        if (SetWindowPos(w.hwnd, nullptr, vsL - width + kGhostSliverPx,
+                         rc.top, 0, 0,
                          SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)) {
             g_ghosted.push_back({ w.hwnd, rc });
             ++ghosts;
@@ -2082,9 +2097,9 @@ void Popup::RegisterThumbnails() {
         // Ghosted (peek-parked) windows keep their LIVE thumbnail
         // (D-079): their card must never fall back to the cached still
         // - the swap reads as low-res/gray next to the hovered card.
-        // Off-screen windows keep rendering; only Chromium-family video
-        // blanks, an accepted cost of the reveal, limited to windows
-        // that actually covered the hovered one (see GhostAllBut).
+        // The ghost leaves a sliver on-screen (D-080), so even
+        // Chromium-family windows keep rendering and their cards keep
+        // streaming video.
 
         HTHUMBNAIL th = nullptr;
         HRESULT hr = DwmRegisterThumbnail(hwnd_, it.hwnd, &th);
