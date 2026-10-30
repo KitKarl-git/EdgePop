@@ -126,6 +126,8 @@ private:
         int item = -1;                   // index into items_ (headers: -1)
         std::wstring label;              // header text
         RECT rc{};                       // client coords, filled at render
+        float slotH = 0.0f;              // aspect-true slot height (client
+                                         // px), set by Show/RebuildInPlace
         RECT thumbSlot{};                // preview region in the card (client px)
         RECT thumbDest{};                // letterboxed DWM thumbnail rect
         bool thumbLive = false;          // thumbnail registered, hole punched
@@ -137,7 +139,10 @@ private:
 
     void EnsureRenderStack();       // D3D11/DXGI/D2D/DWrite/DComp, once
     void Render();                  // full redraw at current size
-    float CardSlotH(float popupW) const;  // preview slot height
+    float SlotHFor(const WindowItem& it, float popupW) const;
+                                         // per-window aspect-true slot
+                                         // height (previews fill their
+                                         // slot - no letterbox bars)
     // Width sizing: cards live at card_width (floored 230, capped
     // 480); the icon+title list caps at max_width. NaturalWidth is the
     // single content-measuring pass shared by Show and RebuildInPlace -

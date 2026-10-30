@@ -93,8 +93,13 @@ constexpr float kMinCardW = 230.0f;    // preview cards need real width
 // the slot height grows with the card's inner width
 // (16:9, clamped) - wider cards mean bigger previews, not wider
 // letterbox bars.
-constexpr float kThumbSlotH = 157.0f;    // slot-height floor
-constexpr float kThumbSlotHMax = 260.0f;
+constexpr float kThumbSlotHMax = 260.0f;  // slot-height ceiling - a
+                                         // portrait window must not eat
+                                         // the popup (below it, slots are
+                                         // aspect-true; the old 16:9 slot
+                                         // letterboxed every other shape
+                                         // and the leftover bar read as
+                                         // the "gray bar", D-085)
 constexpr float kCardWMax = 400.0f;      // ceiling - 480 read too wide on
                                          // my desk; 400 keeps headroom
                                          // over the 300 default
@@ -1459,13 +1464,19 @@ void Popup::Show(const Segment& segment, const MonitorRect& main,
         (s.showTitles || s.showIcons || s.cardCloseButtons)
             ? kThumbStripH
             : 0.0f;
-    const float slotH = CardSlotH(w);
     const float rowH = kRowH * scale_;
     const float headerH = kHeaderH * scale_;
-    const float cardH =
-        (kCardPadY + kCardPadBottom) * scale_ + slotH + stripH * scale_;
+    for (auto& r : rows_) {
+        if (!r.isHeader && r.card)
+            r.slotH = SlotHFor(items_[r.item], w);
+    }
     auto rowHeight = [&](const RowInfo& r) {
-        return r.isHeader ? headerH : (r.card ? cardH : rowH);
+        return r.isHeader
+                   ? headerH
+                   : (r.card
+                          ? (kCardPadY + kCardPadBottom) * scale_ +
+                                stripH * scale_ + r.slotH
+                          : rowH);
     };
     float totalRowsH = 0;
     for (const auto& r : rows_)
@@ -1731,13 +1742,19 @@ void Popup::RebuildInPlace() {
          settings_.cardCloseButtons)
             ? kThumbStripH
             : 0.0f;
-    const float slotH = CardSlotH(w);
     const float rowH = kRowH * scale_;
     const float headerH = kHeaderH * scale_;
-    const float cardH =
-        (kCardPadY + kCardPadBottom) * scale_ + slotH + stripH * scale_;
+    for (auto& r : rows_) {
+        if (!r.isHeader && r.card)
+            r.slotH = SlotHFor(items_[r.item], w);
+    }
     auto rowHeight = [&](const RowInfo& r) {
-        return r.isHeader ? headerH : (r.card ? cardH : rowH);
+        return r.isHeader
+                   ? headerH
+                   : (r.card
+                          ? (kCardPadY + kCardPadBottom) * scale_ +
+                                stripH * scale_ + r.slotH
+                          : rowH);
     };
     float totalRowsH = 0;
     for (const auto& r : rows_)
@@ -1774,15 +1791,35 @@ void Popup::RebuildInPlace() {
     thumbsPending_ = settings_.thumbnails;
 }
 
-// Preview slot height for a card popup of the given width: 16:9
-// of the inner width, clamped - narrow cards keep the classic 157 px
-// slot, wide cards get proportionally bigger previews.
-float Popup::CardSlotH(float popupW) const {
+// Aspect-true slot height for one card (D-085): the preview fills the
+// slot edge to edge, exactly like the native taskbar flyout - the old
+// fixed 16:9 slot letterboxed every other shape, and the leftover bar
+// under a wide preview read as the "gray bar above the next card's
+// title" (D-084 recolored it to panel; D-085 removes it outright).
+// Tall windows clamp at kThumbSlotHMax; very wide windows get short
+// slots (no floor - a floor would bring the bars back). Minimized
+// windows size by their cached snapshot's aspect.
+float Popup::SlotHFor(const WindowItem& it, float popupW) const {
     const float inner = popupW - 2.0f * kPadX * scale_;
-    const float byAspect = inner * 9.0f / 16.0f;
-    const float lo = kThumbSlotH * scale_;
+    double aspect = 16.0 / 9.0;
+    RECT rc{};
+    if (it.hwnd && !IsIconic(it.hwnd) && ClientRectOnScreen(it.hwnd, rc) &&
+        rc.right > rc.left && rc.bottom > rc.top) {
+        aspect = static_cast<double>(rc.right - rc.left) /
+                 static_cast<double>(rc.bottom - rc.top);
+    } else {
+        auto sn = g_snapCache.find(it.hwnd);
+        if (sn != g_snapCache.end() && sn->second.bmp) {
+            const D2D1_SIZE_F sz = sn->second.bmp->GetSize();
+            if (sz.width > 1 && sz.height > 1)
+                aspect = sz.width / sz.height;
+        }
+    }
+    if (aspect < 0.1) aspect = 16.0 / 9.0;    // degenerate guard
+    if (aspect > 21.0) aspect = 21.0;         // sliver guard: h >= inner/21
+    float h = static_cast<float>(inner / aspect);
     const float hi = kThumbSlotHMax * scale_;
-    return byAspect < lo ? lo : (byAspect > hi ? hi : byAspect);
+    return h > hi ? hi : h;
 }
 
 // Rows shifted under a stationary cursor after a rebuild: re-derive the
@@ -2261,11 +2298,6 @@ void Popup::Render() {
     const float iconSz = kIconSz * scale_;
     const bool strip = settings_.showTitles || settings_.showIcons ||
                        settings_.cardCloseButtons;
-    const float slotH = CardSlotH(static_cast<float>(w));
-    const float cardH =
-        (kCardPadY + kCardPadBottom +
-         (strip ? kThumbStripH : 0.0f)) *
-        scale_ + slotH;
 
     if (rows_.empty()) {
         if (g_itemFmt && g_dim) {
@@ -2323,7 +2355,14 @@ void Popup::Render() {
         for (size_t r = 0; r < rows_.size(); ++r) {
             RowInfo& row = rows_[r];
             const float rh =
-                row.isHeader ? headerH : (row.card ? cardH : rowH);
+                row.isHeader
+                    ? headerH
+                    : (row.card
+                           ? (kCardPadY + kCardPadBottom +
+                              (strip ? kThumbStripH : 0.0f)) *
+                                     scale_ +
+                                 row.slotH
+                           : rowH);
             row.rc = { 0, static_cast<LONG>(top), static_cast<LONG>(w),
                        static_cast<LONG>(top + rh) };
 
@@ -2364,7 +2403,7 @@ void Popup::Render() {
                 const float slotTop = sTop + sH;
                 const float slotL = pad;
                 const float slotR = static_cast<float>(w) - pad;
-                const float slotB = slotTop + slotH;
+                const float slotB = slotTop + row.slotH;
                 row.thumbSlot = { static_cast<LONG>(slotL),
                                   static_cast<LONG>(slotTop),
                                   static_cast<LONG>(slotR),
