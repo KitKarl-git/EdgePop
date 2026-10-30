@@ -88,6 +88,9 @@ constexpr float kCardPadBottom = 3.0f;   // under the title strip; 8+8
                                          // between cards read as dead
                                          // space under the title
 constexpr ULONGLONG kThumbDelayMs = 240;   // pop-in (220 ms) must settle
+// CaptureSnapshot caches a window only when at least this % of sampled
+// points over its bounds hit-test to the window itself.
+constexpr int kSnapshotMinVisiblePct = 80;
 
 // Overflow scrolling: content that exceeds the work area scrolls
 // inside a fixed viewport instead of rows being dropped. One wheel notch
@@ -383,6 +386,28 @@ ComPtr<ID2D1Bitmap> CaptureSnapshot(HWND src) {
     const int w = rc.right - rc.left;
     const int h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0 || w > 4096 || h > 4096) return nullptr;
+
+    // The blit below reads the composed screen, so whatever sits ON TOP
+    // at these bounds lands in the bitmap: an occluded window would
+    // cache the OCCLUDER's pixels over its own last-good snapshot, and
+    // the next show flashes another window's content in the card until
+    // the live preview registers (maximized-over-window repro). Sample
+    // hit-tests across the rect and capture only when the window is
+    // what the screen actually shows. WindowFromPoint sends no messages
+    // (safe next to hung apps) and skips click-through overlays like
+    // the taskbar badges; returning nullptr keeps the previous good
+    // cache entry instead of displacing it with the occluder.
+    const int probeStep = std::max(24, std::max(w, h) / 48);
+    int hits = 0, probes = 0;
+    for (int y = rc.top + probeStep / 2; y < rc.bottom; y += probeStep) {
+        for (int x = rc.left + probeStep / 2; x < rc.right; x += probeStep) {
+            const HWND top = WindowFromPoint(POINT{x, y});
+            if (top == src || GetAncestor(top, GA_ROOT) == src) ++hits;
+            ++probes;
+        }
+    }
+    if (probes == 0 || hits * 100 < probes * kSnapshotMinVisiblePct)
+        return nullptr;
 
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
