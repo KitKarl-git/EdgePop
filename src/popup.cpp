@@ -1134,10 +1134,28 @@ void RevealRaise(HWND keep, VirtualDesktops vd) {
     }
     if (occluders == 0) return;   // nothing to reveal it from
     g_raised = { keep, GetWindow(keep, GW_HWNDNEXT) };
-    if (SetWindowPos(keep, HWND_TOP, 0, 0, 0, 0,
-                     SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)) {
-        PLog(L"peek: raise hwnd=0x%p above %d occluder(s)",
-             keep, occluders);
+    // The raise needs z-rights: a background process cannot place a
+    // window above the FOREGROUND window's z-position, and a foreground
+    // that sits LOW (activated without being raised) caps the raise
+    // below the very occluders it must clear - measured live: the plain
+    // SetWindowPos returned TRUE while the occluder stayed on top.
+    // Borrow the rights for the one call with the attach dance (the
+    // same escalation VerifyForeground uses for refused switches).
+    const DWORD ourTid = GetCurrentThreadId();
+    const HWND fgNow = GetForegroundWindow();
+    const DWORD fgTid = fgNow ? GetWindowThreadProcessId(fgNow, nullptr) : 0;
+    const DWORD tgtTid = GetWindowThreadProcessId(keep, nullptr);
+    const bool attFg = fgTid && fgTid != ourTid &&
+                       AttachThreadInput(ourTid, fgTid, TRUE) != 0;
+    const bool attTgt = tgtTid && tgtTid != ourTid &&
+                        AttachThreadInput(ourTid, tgtTid, TRUE) != 0;
+    const BOOL ok = SetWindowPos(keep, HWND_TOP, 0, 0, 0, 0,
+                                  SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+    if (attTgt) AttachThreadInput(ourTid, tgtTid, FALSE);
+    if (attFg) AttachThreadInput(ourTid, fgTid, FALSE);
+    if (ok) {
+        PLog(L"peek: raise hwnd=0x%p above %d occluder(s)%s",
+             keep, occluders, (attFg || attTgt) ? L" (attach)" : L"");
     } else {
         g_raised = RaisedWin{};
         PLog(L"peek: raise hwnd=0x%p refused", keep);
