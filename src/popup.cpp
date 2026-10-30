@@ -2369,15 +2369,17 @@ void Popup::Render() {
             D2D1::RectF(0.0f, protrude, static_cast<float>(w),
                         static_cast<float>(h)),
             D2D1_ANTIALIAS_MODE_ALIASED);
-        float top = protrude - scrollOff_;
-        // Edge shrink (D-088): a row crossing the viewport's top or
-        // bottom scales down as a WHOLE - strip, preview, frame
-        // together, anchored at the edge it is disappearing into. The
-        // old behavior clipped the strip at the viewport line while the
-        // thumbnail re-letterboxed ever smaller inside the visible slot
-        // sliver - two different shrink rates on one card. The scale is
-        // uniform so an aspect-true preview keeps its shape; hit rects
-        // and the thumbnail dest follow the scaled geometry.
+        float layoutY = protrude - scrollOff_;   // layout cursor
+        // Edge shrink (D-088/D-090): a row crossing the viewport's top
+        // or bottom scales down as a WHOLE - and the rows below slide
+        // up to stay attached (D-090 compression, macOS-dock style:
+        // the stack closes the gap; the old edge-anchored shrink left
+        // a full-width dead band that read as an un-shrunk background).
+        // The scale is uniform so an aspect-true preview keeps its
+        // shape; hit rects and the thumbnail dest follow the scaled
+        // geometry, and the shrink hugs the CARDS' seam-side edge
+        // (cardR), never the popup edge - the scroll rail stays clear.
+        float shiftUp = 0.0f;
         const float vBotF = static_cast<float>(h);
         auto beginRowScale = [&](float rowTop, float rowH, float& fs,
                                  float& shX0, float& scaledTop) {
@@ -2400,7 +2402,10 @@ void Popup::Render() {
             // neighbors and read as overlap.
             const bool seamRight =
                 animAnchorClient_.x > static_cast<int>(w) / 2;
-            shX0 = seamRight ? static_cast<float>(w) * (1.0f - fs) : 0.0f;
+            // Anchor at the CARDS' edge (cardR), not the popup edge:
+            // anchoring at w pushed the shrunken card into the scroll
+            // rail (D-090, Karl: "the cards overlap the scroll bar").
+            shX0 = seamRight ? cardR * (1.0f - fs) : 0.0f;
             return fs > 0.02f;   // false: fully out of view, skip row
         };
         auto mapRect = [&](RECT& rc, float fs, float shX0, float scaledTop,
@@ -2413,6 +2418,7 @@ void Popup::Render() {
         };
         for (size_t r = 0; r < rows_.size(); ++r) {
             RowInfo& row = rows_[r];
+            const float top = layoutY - shiftUp;   // effective row top
             const float rh =
                 row.isHeader
                     ? headerH
@@ -2431,7 +2437,7 @@ void Popup::Render() {
                 row.rc = {};
                 row.thumbSlot = {};
                 row.xCard = {};
-                top += rh;
+                layoutY += rh;
                 continue;
             }
             if (fs != 1.0f) {
@@ -2460,8 +2466,9 @@ void Popup::Render() {
                 if (fs != 1.0f) {
                     g_ctx->SetTransform(D2D1_MATRIX_3X2_F{ 1, 0, 0, 1, 0, 0 });
                     mapRect(row.rc, fs, shX0, scaledTop, top);
+                    if (top < protrude) shiftUp += rh * (1.0f - fs);
                 }
-                top += rh;
+                layoutY += rh;
                 continue;
             }
 
@@ -2699,8 +2706,9 @@ void Popup::Render() {
                 mapRect(row.rc, fs, shX0, scaledTop, top);
                 mapRect(row.thumbSlot, fs, shX0, scaledTop, top);
                 mapRect(row.xCard, fs, shX0, scaledTop, top);
+                if (top < protrude) shiftUp += rh * (1.0f - fs);
             }
-            top += rh;
+            layoutY += rh;
         }
         g_ctx->PopAxisAlignedClip();
 
