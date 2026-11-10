@@ -185,6 +185,9 @@ private:
     float scale_ = 1.0f;
     float scrollOff_ = 0.0f;          // overflow scroll, client px
     float maxScroll_ = 0.0f;          // 0 = everything fits, no scrolling
+    bool railOn_ = false;             // rail reserved IFF the list scrolls
+                                       // (D-095: no scrollbar -> no rail,
+                                       // cards run to the popup padding)
     int wheelCarry_ = 0;              // sub-notch wheel remainder (touchpads)
 
     ULONGLONG lastInsideTick_ = 0;    // presence-based closing

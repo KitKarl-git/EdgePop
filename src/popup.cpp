@@ -1502,6 +1502,7 @@ void Popup::Show(const Segment& segment, const MonitorRect& main,
     // into the full layout.
     const float viewportH = totalRowsH < availH ? totalRowsH : availH;
     maxScroll_ = totalRowsH - viewportH;
+    railOn_ = maxScroll_ > 0;
     scrollOff_ = 0;
     const float h = viewportH + kXProtrude * scale_;
 
@@ -1778,6 +1779,7 @@ void Popup::RebuildInPlace() {
     // keeps the scroll position, clamped into the new range.
     const float viewportH = totalRowsH < availH ? totalRowsH : availH;
     maxScroll_ = totalRowsH - viewportH;
+    railOn_ = maxScroll_ > 0;
     scrollOff_ = scrollOff_ > maxScroll_ ? maxScroll_ : scrollOff_;
     if (scrollOff_ < 0) scrollOff_ = 0;
     const float h = viewportH + kXProtrude * scale_;
@@ -2329,15 +2331,23 @@ void Popup::Render() {
         // (over-mode) so text stays readable on bright previews.
         // `reserveR` keeps the last `reserveR` px of the row free (the
         // card close X lives there) so the text ellipsizes short of it.
-        // Cards stop at cardR - the scroll rail lives right of it
-        // (D-089); the classic icon+title list keeps the full width.
-        const float cardR = static_cast<float>(w) - pad - kCardRailW * scale_;
+        // Cards stop at cardR - the scroll rail lives right of it, but
+        // ONLY while the list actually scrolls (D-095, Karl: "when the
+        // scroll bar doesn't exist, NOTHING there"): no overflow means
+        // cards run to the popup padding and the edge is bare. Slot
+        // heights come from SlotHFor(popupW) which never subtracts the
+        // rail, so flipping railOn_ cannot change row heights or
+        // maxScroll_ - the mode can't oscillate.
+        const float cardR =
+            static_cast<float>(w) - pad -
+            (railOn_ ? kCardRailW * scale_ : 0.0f);
         auto drawTitle = [&](const WindowItem& item, float textLeft,
                              float yTop, float h2, bool shadow = false,
                              float reserveR = 0.0f) {
             if (!settings_.showTitles || !g_itemFmt || !g_text) return;
             const float maxW =
-                static_cast<float>(w) - kCardRailW * scale_ - textLeft -
+                static_cast<float>(w) -
+                (railOn_ ? kCardRailW * scale_ : 0.0f) - textLeft -
                 pad - reserveR;
             ComPtr<IDWriteTextLayout> layout;
             g_dwFactory->CreateTextLayout(
@@ -2711,7 +2721,7 @@ void Popup::Render() {
                 // alpha 0 - the desktop shows through, the popup surface
                 // ends with the card, macOS-dock style. Only the card
                 // area [0, cardR] - the rail strip keeps its panel so
-                // the capsule spine stays unbroken. Same MIN-blend
+                // the scroll thumb keeps its backdrop. Same MIN-blend
                 // erase the thumbnail holes use.
                 if (g_erase) {
                     float ex0, ex1;
@@ -2743,11 +2753,15 @@ void Popup::Render() {
         }
         g_ctx->PopAxisAlignedClip();
 
-        // Scroll indicator: a slim capsule riding the rail to the
-        // RIGHT of the cards (D-089) - never over card pixels, never
-        // intersecting the hover border. Indicator only, the wheel is
-        // the input. Starts below the close tab's hit rect so the two
-        // never fight over a pixel column.
+        // Scroll indicator: a floating thumb capsule riding the rail to
+        // the RIGHT of the cards (D-089; the full-height gray track was
+        // removed, D-094 - Karl read it as a stray gray box on the edge;
+        // and since D-095 the rail itself exists ONLY while the list
+        // scrolls - no overflow means no rail, no thumb, cards run to
+        // the padding) - never over card pixels, never intersecting the
+        // hover border. Indicator only, the wheel is the input. Starts
+        // below the close tab's hit rect so the two never fight over a
+        // pixel column.
         if (maxScroll_ > 0) {
             const float trT = protrude + 8.0f * scale_;
             const float trB = static_cast<float>(h) - 2.0f * scale_;
@@ -2764,14 +2778,8 @@ void Popup::Render() {
                 const float sbR = 2.0f * scale_;
                 ComPtr<ID2D1SolidColorBrush> sb;
                 g_ctx->CreateSolidColorBrush(
-                    D2D1::ColorF(kColSoftR, kColSoftG, kColSoftB, 0.18f), &sb);
+                    D2D1::ColorF(kColSoftR, kColSoftG, kColSoftB, 0.45f), &sb);
                 if (sb) {
-                    g_ctx->FillRoundedRectangle(
-                        D2D1::RoundedRect(D2D1::RectF(trL, trT, trR, trB),
-                                          sbR, sbR),
-                        sb.Get());
-                    sb->SetColor(
-                        D2D1::ColorF(kColSoftR, kColSoftG, kColSoftB, 0.45f));
                     g_ctx->FillRoundedRectangle(
                         D2D1::RoundedRect(D2D1::RectF(trL, thY, trR,
                                                       thY + thumbH),
