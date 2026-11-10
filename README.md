@@ -10,7 +10,7 @@ Nothing to hold down, nothing extra to install, no taskbar replacement.
 
 2MB installer and 10MB ram usage! None of these badly written 500mb mini-utilities that bog down your system!
 
-![popup](img/main%20program%20graphic.webp)
+![popup](_media/main%20program%20graphic.webp)
 
 ## The short version
 
@@ -28,13 +28,13 @@ Nothing to hold down, nothing extra to install, no taskbar replacement.
 
 <br/>
 <div align="center">
-  <img src="img/taskbar%20indicators1.jpg" alt="popup">
+  <img src="_media/taskbar%20indicators1.jpg" alt="popup">
   <br>
   <small>Taskbar indicators that indicate where your windows are!</small>
 </div>
 <br/>
 <div align="center">
-  <img src="img/edgepop1.png" alt="popup">
+  <img src="_media/edgepop1.png" alt="popup">
   <br>
   <small>List of your apps on the neighboring window- in any direction!</small>
 </div>

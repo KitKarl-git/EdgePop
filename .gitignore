@@ -72,3 +72,6 @@ src/tests/dialog_probe.rc
 
 # raw screenshot scratch; the ones used in the README live in img/
 /screenshots/
+
+# internal marketing strategy - stays local
+MARKETING.md
