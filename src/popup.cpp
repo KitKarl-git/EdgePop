@@ -1131,16 +1131,19 @@ void RevealRaise(HWND keep, VirtualDesktops vd) {
     const auto others = EnumerateWindowsOnMonitor(mon, vd);
     // Occluders (for the log and the "already visible" short-circuit):
     // z-above AND overlapping - the enumeration is topmost-first, so
-    // everything seen before `keep` sits above it.
+    // everything seen BEFORE `keep` sits above it (D-098: this loop
+    // used to skip the above-windows and count the z-BELOW ones, so a
+    // window at the BOTTOM of an overlap stack - buried under a
+    // maximized window, nothing beneath - counted zero occluders and
+    // never raised; peek only fired when an unrelated window happened
+    // to sit below the target).
     RECT keepRc{};
     const bool haveKeep =
         GetWindowRect(keep, &keepRc) && keepRc.right > keepRc.left;
     int occluders = 0;
-    bool seenKeep = false;
     for (const auto& w : others) {
-        if (w.hwnd == keep) { seenKeep = true; continue; }
-        if (w.minimized || !IsWindow(w.hwnd)) continue;
-        if (!haveKeep || !seenKeep) continue;
+        if (w.hwnd == keep) break;   // the rest is z-below keep
+        if (w.minimized || !IsWindow(w.hwnd) || !haveKeep) continue;
         RECT rc{};
         if (!GetWindowRect(w.hwnd, &rc)) continue;
         const RECT inter{ std::max(rc.left, keepRc.left),
